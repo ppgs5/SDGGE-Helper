@@ -61,11 +61,11 @@ try:
         assert 'soshage（域名可配置）' not in t
         print('[① 标题(去 soshage) + 作者 DeepSeek 通过]')
 
-        # ② 遗留地址清除
-        r = pg.evaluate("() => ({ v: document.getElementById('upbase').value, ls: localStorage.getItem('ggen_update_base') })")
-        print('[② 遗留地址清除]', r)
-        assert r['v'] == '' and r['ls'] is None, r
-        print('[② 数据仓库卡片 遗留 soshage 地址自动清除 通过]')
+        # ② (v0.101 起已去掉自定义更新源输入框) 断言不存在 + 遗留键被清理
+        r = pg.evaluate("() => ({ has: !!document.getElementById('upbase'), ls: localStorage.getItem('ggen_update_base'), autoLine: document.body.innerText.includes('自动线路：') })")
+        print('[② 自定义更新源已移除]', r)
+        assert not r['has'] and r['ls'] is None and not r['autoLine'], r
+        print('[② 输入框/自动线路说明行已移除, 遗留键已清理 通过]')
 
         # ③ APP 版本检测(exists→v9.9.9 可更新)
         r = pg.evaluate("""() => ({ ver: document.getElementById('appver').textContent,
