@@ -3932,7 +3932,8 @@ function pageUpdate(v) {
     <div class="card"><h4>备份与恢复</h4><div class="kv" style="color:var(--dim)">数据库文件即备份：web/data/ggen.db（${fmt(Math.round((window.__dbSize || 0) / 1e6))} MB）。重建前保留旧版即可回滚；App 内下载的更新库可用「恢复内置数据」清除。</div></div>
     <div class="card"><h4>关于</h4>
       <div class="kv" style="color:var(--dim)">作者：<b style="color:#cfe0ff">DeepSeek</b> · SD高达永恒助手</div>
-      <div class="kv" style="color:var(--dim)">开源地址（源代码 + 关键数据）：<b id="osurl" style="color:#9fd8ff;text-decoration:underline">github.com/ppgs5/SDGGE-Helper</b></div>
+      <div class="kv" style="color:var(--dim)">开源地址（源代码 + 关键数据 + APK 下载）：<b id="osurl" style="color:#9fd8ff;text-decoration:underline">github.com/ppgs5/SDGGE-Helper</b></div>
+      <div class="kv" style="color:var(--dim)">免VPN镜像（无需梯子即可打开）：<b id="osurl2" style="color:#9fd8ff;text-decoration:underline">gh-proxy.com/https://github.com/ppgs5/SDGGE-Helper</b></div>
       <div class="kv" style="color:var(--dim)">数据来源：soshage / gamekee · 数据仓库：github.com/ppgs5/ggen-data</div></div>`;
   const msg = html => { const el = $('upmsg'); if (el) el.innerHTML = html; };
   const MB = n => (n / 1048576).toFixed(n > 10485760 ? 1 : 2) + ' MB';
@@ -3956,7 +3957,8 @@ function pageUpdate(v) {
           $('appupd').style.display = '';
           $('appupd').onclick = () => {
             if (typeof window.Android === 'undefined' || !window.Android.downloadApk) { msg('请在 App 内下载新版本'); return; }
-            if (!window.Android.downloadApk(av.apk_url, av.apk_mirror || '', av.version)) { msg('已有下载任务进行中…'); return; }
+            const urls = (av.apk_urls && av.apk_urls.length) ? av.apk_urls : [av.apk_url, av.apk_mirror].filter(Boolean);
+            if (!window.Android.downloadApk(JSON.stringify(urls), av.version)) { msg('已有下载任务进行中…'); return; }
             $('appupd').style.display = 'none';
             const t = setInterval(() => {
               let st2 = {}; try { st2 = JSON.parse(window.Android.apkState() || '{}'); } catch (e) {}
@@ -3975,6 +3977,7 @@ function pageUpdate(v) {
   };
   checkApp();
   if ($('osurl')) $('osurl').onclick = () => { if (window.Android && window.Android.openUrl) window.Android.openUrl('https://' + $('osurl').textContent); };
+  if ($('osurl2')) $('osurl2').onclick = () => { if (window.Android && window.Android.openUrl) window.Android.openUrl('https://' + $('osurl2').textContent); };
   /* 完整更新（兜底）: Java 侧下载整库并热替换 */
   const startFullDl = (b, m) => {
     if (typeof window.Android === 'undefined') { msg('请在 App 内更新（网页版仅支持检查）'); return; }

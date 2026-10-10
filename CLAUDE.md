@@ -25,4 +25,4 @@
 ## 三、每轮工作流（不变）
 用户需求 → 诊断（grep/单点查询）→ 改 `web/`+`data/` → 写 `test_vNN.py`（NN=轮次序号）
 → 跑 新测试+上一轮（tail -5）→ 升 `build.gradle` versionCode/Name → `bash android_app/build.sh`
-→ 部署改名保两个 → 校验 APK assets MD5 ＝ `web/` → **`python3 data/publish_app.py`（上传 Releases + app_version.json + purge）** → `git commit+push` → 更新 resume §4/§5 与记忆。
+→ 部署改名保两个 → 校验 APK assets MD5 ＝ `web/` → **`python3 data/publish_app.py`（上传 Releases + app_version.json + purge）** → **`python3 data/sync_public.py`（同步公开仓 SDGGE-Helper）** → `git commit+push` → 更新 resume §4/§5 与记忆。

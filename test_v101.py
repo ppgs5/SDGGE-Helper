@@ -5,7 +5,7 @@
 ③ APP 版本: stub 当前 0.101 vs mock 9.9.9 → 可更新+按钮 → downloadApk(url,mirror,'9.9.9') → 进度/安装
 ④ mock 改 0.100(<0.101) → 「已是最新」且说明不再停在「检测中…」(v0.96 bug 修复)
 """
-import os, subprocess, sys, time
+import json, os, subprocess, sys, time
 from playwright.sync_api import sync_playwright
 
 HERE = '/root/workspace/ggen_app'
@@ -22,7 +22,8 @@ open(os.path.join(MOCK2, 'app_version.json'), 'w', encoding='utf-8').write(
 def write_mock(ver):
     open(os.path.join(MOCK, 'app_version.json'), 'w', encoding='utf-8').write(
         '{"version":"%s","size":12345678,"note":"测试版","apk_url":"https://example.com/apk",'
-        '"apk_mirror":"https://mirror.example.com/apk"}' % ver)
+        '"apk_mirror":"https://mirror.example.com/apk",'
+        '"apk_urls":["https://example.com/apk","https://mirror.example.com/apk","https://m3.example.com/apk"]}' % ver)
 write_mock('9.9.9')
 
 import functools, http.server, threading
@@ -51,7 +52,7 @@ try:
           window.Android = {
             dbInfo: () => '{}', listPatches: () => '[]',
             appInfo: () => JSON.stringify({versionName: '0.101', versionCode: 101}),
-            downloadApk: (u, u2, v) => { window.__dl = [u, u2, v]; window.__st = {state: 'downloading', pct: 5}; return true; },
+            downloadApk: (u, v) => { window.__dl = [u, v]; window.__st = {state: 'downloading', pct: 5}; return true; },
             apkState: () => JSON.stringify(window.__st || {state: 'idle'}),
             openUrl: (u) => { window.__opened = u; }
           };
@@ -78,6 +79,15 @@ try:
         print('[② 开源地址点击]', op)
         assert op == 'https://github.com/ppgs5/SDGGE-Helper', op
         print('[② 关于(作者 DeepSeek + 开源地址可点) 通过]')
+        # ②b 免VPN镜像地址(v0.102): 显示 + 点击→openUrl(完整镜像URL)
+        m = pg.evaluate("() => (document.getElementById('osurl2')||{}).textContent")
+        print('[②b 免VPN镜像]', m)
+        assert m and 'gh-proxy.com' in m and 'SDGGE-Helper' in m, m
+        pg.evaluate("() => document.getElementById('osurl2').click()")
+        pg.wait_for_timeout(400)
+        op2 = pg.evaluate("() => window.__opened")
+        assert op2 == 'https://gh-proxy.com/https://github.com/ppgs5/SDGGE-Helper', op2
+        print('[②b 免VPN镜像地址显示+可点 通过]')
 
         # ③ 可更新流程
         r = pg.evaluate("""() => ({ ver: document.getElementById('appver').textContent,
@@ -87,7 +97,8 @@ try:
         pg.evaluate("() => document.getElementById('appupd').click()")
         pg.wait_for_timeout(500)
         dl = pg.evaluate("() => window.__dl")
-        assert dl == ['https://example.com/apk', 'https://mirror.example.com/apk', '9.9.9'], dl
+        assert dl == [json.dumps(['https://example.com/apk', 'https://mirror.example.com/apk', 'https://m3.example.com/apk'], separators=(',', ':')), '9.9.9'], dl
+        print('[③ 多线路列表传入桥]', dl[0])
         pg.evaluate("() => { window.__st = {state: 'downloading', pct: 42}; }")
         pg.wait_for_timeout(1200)
         assert '42%' in pg.evaluate("() => document.getElementById('appnote').textContent")

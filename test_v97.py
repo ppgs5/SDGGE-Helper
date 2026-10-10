@@ -44,7 +44,7 @@ try:
           window.Android = {
             dbInfo: () => '{}', listPatches: () => '[]',
             appInfo: () => JSON.stringify({versionName: '0.96', versionCode: 96}),
-            downloadApk: (u, u2, v) => { window.__dl = [u, u2, v]; window.__st = {state: 'downloading', pct: 5}; return true; },
+            downloadApk: (u, v) => { window.__dl = [u, v]; window.__st = {state: 'downloading', pct: 5}; return true; },
             apkState: () => JSON.stringify(window.__st || {state: 'idle'})
           };
         """)
@@ -79,7 +79,8 @@ try:
         pg.wait_for_timeout(500)
         dl = pg.evaluate("() => window.__dl")
         print('[④ downloadApk 参数]', dl)
-        assert dl == ['https://example.com/apk', 'https://mirror.example.com/apk', '9.9.9'], dl
+        import json as _json
+        assert dl == [_json.dumps(['https://example.com/apk', 'https://mirror.example.com/apk'], separators=(',', ':')), '9.9.9'], dl
         pg.evaluate("() => { window.__st = {state: 'downloading', pct: 42}; }")
         pg.wait_for_timeout(1200)
         note = pg.evaluate("() => document.getElementById('appnote').textContent")

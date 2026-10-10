@@ -11,7 +11,8 @@ import glob, hashlib, json, os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.environ.get('GGEN_DATA_REPO', '/root/workspace/ggen-data')
-GH_REPO = 'ppgs5/ggen-data'
+GH_REPO = 'ppgs5/SDGGE-Helper'        # Release 发布到公开开源仓(直接下载入口)
+DATA_REPO = 'ppgs5/ggen-data'        # app_version.json 仍写数据仓(走镜像链被 App 拉取)
 
 
 def sh(cmd, cwd=None):
@@ -49,6 +50,8 @@ def main():
                f'--notes "APK {tag} · {size} 字节 · sha256 {sha[:16]}。数据仍走增量补丁在线更新, 不重装即可生效。"')
         print(f'Release {tag} 已上传 ({size/1e6:.1f} MB, asset={asset})')
     av = {'version': ver, 'size': size, 'sha256': sha, 'apk_url': url, 'apk_mirror': mirror,
+          'apk_urls': [url, mirror, 'https://ghproxy.net/' + url, 'https://gh.llkk.cc/' + url],   # 多线路备选(免VPN镜像已实测)
+          'repo': f'https://github.com/{GH_REPO}', 'mirror_page': f'https://gh-proxy.com/https://github.com/{GH_REPO}',
           'note': f'v{ver} 更新包（{size/1e6:.1f} MB），下载完成后弹系统安装界面。', 'updated_at': int(time.time())}
     with open(os.path.join(REPO, 'app_version.json'), 'w', encoding='utf-8') as f:
         json.dump(av, f, ensure_ascii=False, indent=1)
@@ -57,7 +60,7 @@ def main():
         sh(f'git commit -m "app {tag} ({size} bytes sha256={sha[:12]})"', cwd=REPO)
         sh('git push -u origin main', cwd=REPO)
     try:
-        r = subprocess.run(['curl', '-s', f'https://purge.jsdelivr.net/gh/{GH_REPO}@main/app_version.json'],
+        r = subprocess.run(['curl', '-s', f'https://purge.jsdelivr.net/gh/{DATA_REPO}@main/app_version.json'],
                            capture_output=True, text=True, timeout=40)
         print('purge jsDelivr:', 'ok' if 'finished' in (r.stdout or '') else (r.stdout or '')[:80])
     except Exception as e:

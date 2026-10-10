@@ -46,7 +46,9 @@ public class MainActivity extends Activity {
     private volatile int apkPct = 0;
     private volatile String apkErr = "";
     private long apkDlId = -1;
-    private String apkUrl2 = "", apkVer = "";
+    private String apkVer = "";
+    private String[] apkList = new String[0];
+    private int apkIdx = 0;
     private BroadcastReceiver apkRcv;
 
     @Override
@@ -112,12 +114,20 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
-        public boolean downloadApk(final String url, final String url2, final String version) {
+        public boolean downloadApk(final String urlsJson, final String version) {
             if ("downloading".equals(apkState)) return false;
             apkState = "downloading"; apkPct = 0; apkErr = "";
-            apkUrl2 = url2 == null ? "" : url2;
             apkVer = version == null ? "new" : version;
-            enqueueApk(url);
+            /* 多线路备选(与数据更新同款): 直连/镜像列表, 失败自动切下一条 */
+            java.util.List<String> ls = new java.util.ArrayList<>();
+            try {
+                org.json.JSONArray a = new org.json.JSONArray(urlsJson);
+                for (int i = 0; i < a.length(); i++) { String u = a.optString(i, ""); if (!u.isEmpty()) ls.add(u); }
+            } catch (Exception e) { if (urlsJson != null && !urlsJson.isEmpty()) ls.add(urlsJson); }
+            if (ls.isEmpty()) { apkErr = "无可用下载线路"; apkState = "error"; return false; }
+            apkList = ls.toArray(new String[0]);
+            apkIdx = 0;
+            enqueueApk(apkList[0]);
             return true;
         }
 
@@ -150,12 +160,11 @@ public class MainActivity extends Activity {
                                 catch (Exception e) { apkErr = "请到通知栏或「下载」目录手动安装"; apkState = "error"; }
                                 return;
                             }
-                            if (st == DownloadManager.STATUS_FAILED && !apkUrl2.isEmpty()) {   // 镜像兜底重试
-                                String u2 = apkUrl2; apkUrl2 = "";
-                                enqueueApk(u2);
-                                return;
+                            if (st == DownloadManager.STATUS_FAILED) {   // 多线路回退: 切下一条
+                                apkIdx++;
+                                if (apkIdx < apkList.length) { enqueueApk(apkList[apkIdx]); return; }
                             }
-                            apkErr = "下载失败，请检查网络后重试"; apkState = "error";
+                            apkErr = "所有下载线路均失败，请检查网络后重试"; apkState = "error";
                         }
                     };
                     IntentFilter f = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
