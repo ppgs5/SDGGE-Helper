@@ -13,7 +13,11 @@ WEB = os.path.join(HERE, 'web')
 MOCK = '/tmp/ggen_app_mock'
 PORT, MPORT = 9006, 9007
 
+MOCK2 = '/tmp/ggen_app_mock2'
 os.makedirs(MOCK, exist_ok=True)
+os.makedirs(MOCK2, exist_ok=True)
+open(os.path.join(MOCK2, 'app_version.json'), 'w', encoding='utf-8').write(
+    '{"version":"9.9.9","size":1,"note":"新线路","apk_url":"https://example.com/apk","apk_mirror":""}')
 
 def write_mock(ver):
     open(os.path.join(MOCK, 'app_version.json'), 'w', encoding='utf-8').write(
@@ -31,6 +35,8 @@ class _H(http.server.SimpleHTTPRequestHandler):   # mock 需带 CORS
     def log_message(self, *a): pass
 _msrv = http.server.ThreadingHTTPServer(('127.0.0.1', MPORT), functools.partial(_H, directory=MOCK))
 threading.Thread(target=_msrv.serve_forever, daemon=True).start()
+_msrv2 = http.server.ThreadingHTTPServer(('127.0.0.1', 9008), functools.partial(_H, directory=MOCK2))
+threading.Thread(target=_msrv2.serve_forever, daemon=True).start()
 time.sleep(1.2)
 errors = []
 try:
@@ -98,9 +104,17 @@ try:
         print('[④ 已是最新分支]', r)
         assert '已是最新' in r['nw'] and '检测中' not in r['note'] and r['note'], r
         print('[④ 0.100<0.101 → 已是最新, 说明不再是「检测中…」 通过]')
+
+        # ⑤ 陈旧镜像在前 + 新镜像在后 → 并行探测取最高版本(顺序取第一条会误报已是最新)
+        pg.evaluate("() => { window.__UPD_AUTO = ['http://127.0.0.1:9007/', 'http://127.0.0.1:9008/']; state.stack = []; push({page: 'update', title: '更新中心'}); }")
+        pg.wait_for_timeout(2500)
+        r = pg.evaluate("() => document.getElementById('appnew').textContent")
+        print('[⑤ 并行探测]', r)
+        assert 'v9.9.9' in r and '可更新' in r, r
+        print('[⑤ 陈旧镜像在前仍取到最高版本(9.9.9) 通过]')
         b.close()
 finally:
-    srv.terminate(); _msrv.shutdown()
+    srv.terminate(); _msrv.shutdown(); _msrv2.shutdown()
 if errors:
     print('页面错误:', errors[:6]); sys.exit(1)
 print('=== test_v101 全部通过 ===')

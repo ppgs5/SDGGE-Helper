@@ -3942,13 +3942,14 @@ function pageUpdate(v) {
   $('appver').textContent = appVer ? ('v' + appVer) : '网页版';
   const checkApp = async () => {
     if (!appVer) { $('appnote').textContent = '网页模式无 APP 更新（安装 APK 后可用）；作者：DeepSeek'; return; }
-    const bases = UPD_AUTO.slice();
-    for (const b of bases) {
-      try {
-        const r = await fetch(b + 'app_version.json?t=' + Date.now(), { cache: 'no-store' });
-        if (!r.ok) continue;
-        const av = await r.json();
-        if (!av || !av.version) continue;
+    /* 并行探测各线路取最高版本(镜像/CDN 可能缓存旧清单——顺序取第一条会误报已是最新) */
+    const results = await Promise.allSettled(UPD_AUTO.map(b =>
+      fetch(b + 'app_version.json?t=' + Date.now(), { cache: 'no-store' }).then(r => r.ok ? r.json() : null)));
+    let av = null;
+    for (const r of results) {
+      if (r.status === 'fulfilled' && r.value && r.value.version && (!av || cmpVer(r.value.version, av.version) > 0)) av = r.value;
+    }
+    if (av) {
         if (cmpVer(av.version, appVer) > 0) {
           $('appnew').innerHTML = ' → <b style="color:#9fe8c0">v' + esc(av.version) + '</b> 可更新' + (av.size ? '（' + MB(av.size) + '）' : '');
           $('appnote').textContent = (av.note ? av.note + ' ' : '') + '下载完成后系统会弹出安装界面；未弹出可在通知栏或「下载」里手动安装。';
@@ -3968,10 +3969,9 @@ function pageUpdate(v) {
           $('appnew').innerHTML = ' <span style="color:#9fe8c0">已是最新</span>';
           $('appnote').textContent = '当前已是最新版本，无需更新。';   // 修: 此前停在「检测中…」
         }
-        return;
-      } catch (e) {}
+    } else {
+      $('appnote').textContent = '未能获取 APP 版本信息（网络原因，可稍后重试）';
     }
-    $('appnote').textContent = '未能获取 APP 版本信息（网络原因，可稍后重试）';
   };
   checkApp();
   if ($('osurl')) $('osurl').onclick = () => { if (window.Android && window.Android.openUrl) window.Android.openUrl('https://' + $('osurl').textContent); };
