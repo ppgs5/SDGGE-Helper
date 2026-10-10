@@ -1,0 +1,129 @@
+{
+ "note": "手动收录(2026-10-08): 官网尚未收录。SSR(稀有度=4, 金标)。数值: 基础=强化上限OFF, sp=强化上限ON(SP开关生效); 编号按官方规则取保留临时段9990(id 1999000100, 图标 g9990c00100z 加 z 标记); 官网收录同名后自动让位。tags=游戏内「角色信息」标签页(2026-10-09 截图确认): 宇宙世纪系列/独立世界观系列/高达驾驶员。",
+ "chars": [
+  {
+   "id": 1999000100,
+   "name": "塞西娅·阿维亚",
+   "name_hant": "塞西婭·阿維亞",
+   "rarity": 4,
+   "role": 3,
+   "series_set_id": "1999000000",
+   "series_name": "GUNDAM EXA",
+   "icon": "g9990c00100z",
+   "tags": [
+    "宇宙世纪系列",
+    "独立世界观系列",
+    "高达驾驶员"
+   ],
+   "skills": [
+    {
+     "sort": 1,
+     "unlock_level": 1,
+     "sp": 5,
+     "name": "射击值增幅 LV3",
+     "clone": "射击值增幅 LV3",
+     "desc": "效果发动后的下次对战时\n自身射击值提升15%(1回合)"
+    },
+    {
+     "sort": 2,
+     "unlock_level": 30,
+     "sp": 10,
+     "name": "摇摆闪避 LV1",
+     "clone": "摇摆闪避 LV1",
+     "desc": "效果发动后的下次对战时\n自身闪避率提升100%"
+    }
+   ],
+   "abilities": [
+    {
+     "sort": 1,
+     "unlock_level": 1,
+     "name": "(支援时)攻击力提升 LV3",
+     "clone": "(支援时)攻击力提升 LV3"
+    },
+    {
+     "sort": 2,
+     "unlock_level": 10,
+     "name": "射击值提升 LV3",
+     "clone": "射击值提升 LV3"
+    },
+    {
+     "sort": 3,
+     "unlock_level": 45,
+     "name": "超强势EX LV1",
+     "traits": [
+      {
+       "tid": 9990000001,
+       "trait_id": 9990000001,
+       "trait": {
+        "id": 9990000001,
+        "trait_type": 51,
+        "trait_value": 1,
+        "desc": "「支援攻击／反击」+1次(1回合)",
+        "action_timing": 0,
+        "tlimit": 0,
+        "active_condition": {
+         "tension": "SuperHigh",
+         "unit_series": "1999000000"
+        }
+       }
+      },
+      {
+       "tid": 9990000002,
+       "trait_id": 9990000002,
+       "trait": {
+        "id": 9990000002,
+        "trait_type": 21,
+        "trait_value": 15,
+        "desc": "自身射击值提升15%(1回合)",
+        "action_timing": 0,
+        "tlimit": 0,
+        "active_condition": {
+         "tension": "SuperHigh",
+         "unit_series": "1999000000"
+        }
+       }
+      },
+      {
+       "tid": 9990000003,
+       "trait_id": 9990000003,
+       "trait": {
+        "id": 9990000003,
+        "trait_type": 27,
+        "trait_value": 15,
+        "desc": "自身反应值提升15%(1回合)",
+        "action_timing": 0,
+        "tlimit": 0,
+        "active_condition": {
+         "tension": "SuperHigh",
+         "unit_series": "1999000000"
+        }
+       }
+      }
+     ],
+     "note": "触发=搭乘含「GUNDAM EXA」系列(series id 1999000000, 游戏角色能力一览SERIES chip)且战意「超强势」以上: 支援攻击/反击+1次(1回合)、射击/命中/反应+15%(1回合)、MP变动无效、结束时MP-6。命中率与MP类效果(MP变动无效/结束MP-6)引擎未建模; 系列条件已按游戏画面补(2026-10-10)。"
+    },
+    {
+     "sort": 4,
+     "unlock_level": 80,
+     "name": "射击值提升 LV1",
+     "clone": "射击值提升 LV1"
+    }
+   ],
+   "max": {
+    "ranged": 557,
+    "melee": 493,
+    "defense": 425,
+    "reaction": 452,
+    "awaken": 293
+   },
+   "sp": {
+    "ranged": 650,
+    "melee": 577,
+    "defense": 498,
+    "reaction": 530,
+    "awaken": 345
+   },
+   "note": " 【2026-10-10修正】数据口径与官方一致=存**未增强原值**: 射击 sp(SP开)=650 / max(SP关)=557; 游戏面板蓝色字体 780/668 = 原值×常驻被动(+20%: 射击值提升LV3+15% + LV1+5%, 由引擎正常叠加, floor 计)。通用规则: 游戏蓝字=原值×常驻生效被动(如 夏亚 706×1.05=741 / 659×1.25=823 / 535×1.25=668), 按截图录入时须先除回原值。"
+  }
+ ]
+}
