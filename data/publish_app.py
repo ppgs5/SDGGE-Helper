@@ -43,7 +43,15 @@ def main():
         tmp = os.path.join('/tmp', asset)
         import shutil
         shutil.copy(apk, tmp)
-        notes = ((NOTE + '\n\n') if NOTE else '') + f'APK {tag} · {size} 字节 · sha256 {sha[:16]}。数据仍走增量补丁在线更新, 不重装即可生效。'
+        perm_txt = ('INTERNET=联网检查数据更新/下载新版APK；REQUEST_INSTALL_PACKAGES=App内下载后调起系统安装。'
+                    '不申请存储/通讯录/短信/剪贴板等任何敏感权限。')
+        notes = ((NOTE + '\n\n') if NOTE else '') + (
+            f'APK {tag} · {size} 字节 · 数据仍走增量补丁在线更新, 不重装即可生效。\n\n'
+            f'**SHA256**（完整性校验, 与源码构建产物一致）: `{sha}`\n'
+            '校验方法: Windows `certutil -hashfile 文件名 SHA256` · Linux/安卓终端 `sha256sum 文件名`\n\n'
+            f'**权限说明**: {perm_txt}\n\n'
+            '**免责声明**: 本工具为第三方非官方作品，与 Bandai Namco（万代）无任何关联；'
+            '使用存在账号风控与设备安全风险，使用者风险自担；仅供数据查询与伤害计算的学习交流。')
         rels = sh(f'gh release list --repo {GH_REPO} --limit 100')
         if tag in rels:
             sh(f'gh release upload {tag} "{tmp}" --repo {GH_REPO} --clobber')

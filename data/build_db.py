@@ -319,7 +319,7 @@ def main():
     n = 0
     for u in units or []:
         st = u.get('stats') or {}
-        tr = u.get('terrain') or {}
+        tr = u.get('terrain') or {}   # 变形态(【MA】/【分离型态】等)数据源可能缺地形 → 建库后可运行 data/fix_unit_terrain.py 从本体继承补齐
         # max_* 存「等级上限插值」值(SP关★0): 游戏/网站按等级上限显示★0值, ★3面板=floor(★0×1.4); sp_max_* 保持Lv100口径
         _capu = CH_LEVEL_CAP.get(u.get('rarity'), 100)
         # series_set 数组顺序不可靠(如 [10(sort2),30(sort1)]), 主系列=sort=1 的作品系列

@@ -170,7 +170,7 @@ try:
         pg.evaluate("() => { state.stack = []; push({ page: 'update', title: '更新中心' }); }")
         pg.wait_for_timeout(1500)
         utxt = pg.evaluate("() => document.body.innerText")
-        assert 'APP 更新说明' in utxt and '0.103' in utxt and '首动' in utxt
+        assert 'APP 更新说明' in utxt and 'v0.104' in utxt and '组队页「队伍增强」新增自定义增强' in utxt
         print('[⑥ 更新中心 APP更新说明(v0.103·首动) 通过]')
         b.close()
 finally:

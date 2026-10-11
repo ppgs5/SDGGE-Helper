@@ -49,6 +49,7 @@ public class MainActivity extends Activity {
     private String apkVer = "";
     private String[] apkList = new String[0];
     private int apkIdx = 0;
+    private String apkShaCache = null;   // 安装包 SHA256(懒计算, 供「关于/APP版本」展示校验值)
     private BroadcastReceiver apkRcv;
 
     @Override
@@ -111,6 +112,23 @@ public class MainActivity extends Activity {
                 o.put("versionName", getPackageManager().getPackageInfo(getPackageName(), 0).versionName);
             } catch (Exception ignored) {}
             return o.toString();
+        }
+
+        @JavascriptInterface
+        public String apkSha256() {   // 当前安装包 APK 的 SHA256(与 Release 页公布的资产哈希一致, 供用户校验)
+            if (apkShaCache != null) return apkShaCache;
+            try {
+                java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+                java.io.FileInputStream in = new java.io.FileInputStream(getPackageCodePath());
+                byte[] buf = new byte[65536];
+                int n;
+                while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+                in.close();
+                StringBuilder sb = new StringBuilder();
+                for (byte b : md.digest()) sb.append(String.format("%02x", b));
+                apkShaCache = sb.toString();
+            } catch (Exception e) { apkShaCache = ""; }
+            return apkShaCache;
         }
 
         @JavascriptInterface

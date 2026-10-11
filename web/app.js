@@ -51,7 +51,7 @@ const FEAT = {
   auto_extra_action: '自带额外行动', preemptive: '先发攻击', support_atk: '支援攻击+2', support_def: '支援防御+2', mp_skill: '有MP技能', sway_evade: '摇摆闪避',
   team_buff: '队伍增强', ally_buff_self: '队友对自身增强', unit_skill: '单位技能',
   shield_defense: '盾牌防御', transform: '变形机构', swap: '换装',
-  move6: '6移动', move7: '7移动', range6: '6射程', range7: '7射程', range_up: '射程加',
+  move6: '6移动', move7: '支援防御范围7', range6: '6射程', range7: '7射程', range_up: '射程加',
 };
 const WATTR = { 1: ['ranged'], 2: ['melee'], 3: ['awaken'], 4: ['ranged', 'melee'], 5: ['ranged', 'awaken'], 6: ['melee', 'awaken'], 7: ['ranged', 'melee', 'awaken'] };
 const TYATTR = { 1: '射击', 2: '格斗', 3: '觉醒', 4: '射击/格斗', 5: '射击/觉醒', 6: '格斗/觉醒', 7: '全属性(EX)' };
@@ -325,6 +325,14 @@ const UNIT_GATE_BUG_CHARS = new Set([1330000103]);
 const ABIL_KIND = { 7: 'atk', 17: 'dmg', 21: 'ranged', 23: 'melee', 29: 'awaken' };
 /* 出击场地适性: 3=○正常 / 2=△移动力减半 / 1=×不能出击 (soshage原始terrain字段) */
 const terrOf = (u, k) => (k === 'space' ? u.terrain_space : k === 'atm' ? u.terrain_atm : k === 'ground' ? u.terrain_ground : k === 'surface' ? u.terrain_surface : k === 'water' ? u.terrain_water : 0) || 0;
+/* 组队行右侧迷你地形适性: 宇○ 空△ 地○ 面× 中× (3=○ 2=△ 1=× 其他=—) */
+function terrMini(uid) {
+  const u = q1('SELECT terrain_space a, terrain_atm b, terrain_ground c, terrain_surface d, terrain_water e FROM units WHERE id=?', [uid]);
+  if (!u) return '';
+  const sy = v => v === 3 ? '○' : v === 2 ? '△' : v === 1 ? '×' : '—';
+  const cl = v => v === 3 ? '#7df0a8' : v === 2 ? '#f5c451' : v === 1 ? '#ff6b6b' : 'var(--dim)';
+  return [['宇', u.a], ['空', u.b], ['地', u.c], ['面', u.d], ['中', u.e]].map(([n, v]) => `${n}<b style="color:${cl(v)}">${sy(v)}</b>`).join(' ');
+}
 /* 水中场地武器倍率(来自 weapon_use 使用限制, 与 ssp_json 官方 capability 双轴一致):
    「对水下敌人的伤害减半」→50 / 「不能在水下使用」(in_underwater=false) 或「对水下敌人没有伤害」(damage_underwater=0) →0 不可用; 无限制默认100
    注: SSP版武器可能解除限制(如 GN加农SSP 无限制, 基础版减半) — weapon_use 按版本各存各的 */
@@ -1042,10 +1050,10 @@ function resetPageDefaults() {
     resetFiltOf('rank');
     state.rankCache = null;
   } else if (state.tab === 'team') {
-    Object.assign(state.team, { skills: false, first: false, fdth: false, shipStar: 0, range: 'all', vigor: 'default', ca: true, mp: false, prole: null, terr: '', buffs: [],
+    Object.assign(state.team, { skills: false, first: false, fdth: false, cbuff: { tags: [], pct: 0 }, cbOn: false, shipStar: 0, range: 'all', vigor: 'default', ca: true, mp: false, prole: null, terr: '', buffs: [],
       tdef: 10000, tcdef: 750, defup: 0, atkup: 0, star: 3, spU: true, s3u: true, sspU: true, pSpU: true,
       prar: null, rar: null, wat: null, atk: null, urole: null, guard: false, sdef: false });
-    resetFiltOf('team'); resetFiltOf('teamp');
+    resetFiltOf('team'); resetFiltOf('teamp'); resetFiltOf('tbuff');
   }
 }
 
@@ -1229,7 +1237,7 @@ async function openTagPicker(cat, onChange) {
     ? Object.keys(counts).sort((a, b) => counts[b] - counts[a]).map(n => ({ id: n, name: n }))
     : q('SELECT id,name FROM tags ORDER BY id').filter(t => counts[t.id]);
   let sel = [...f.tags], mode = f.mode, search = '';
-  const hasSeries = ['unit', 'rank', 'team', 'char', 'weapon', 'mod', 'picku', 'pickc', 'teamp', 'feat'].includes(cat);   // 系列筛选: 战舰无系列数据
+  const hasSeries = ['unit', 'rank', 'team', 'char', 'weapon', 'mod', 'picku', 'pickc', 'teamp', 'feat', 'tbuff'].includes(cat);   // 系列筛选: 战舰无系列数据; tbuff=组队自定义增强
   let listMode = 'tag', selSeries = [...(f.series || [])].map(Number);
   const buildSeries = () => {
     const vc = verCond(cat === 'unit' || cat === 'picku' ? 'unit' : cat, f);
@@ -1254,7 +1262,7 @@ async function openTagPicker(cat, onChange) {
     const stPrev = keepScroll && $('stlist') ? $('stlist').scrollTop : 0;
     const list = tags.filter(t => ciHas(t.name, search));
     const slist = series.filter(s => ciHas(s.name, search));
-    const catName = ({ unit: '机体', rank: '机体', team: '机体', char: '驾驶员', weapon: '武器', mod: '零件', supp: '战舰', picku: '机体', pickc: '驾驶员', teamp: '驾驶员', feat: '机体/驾驶员' })[cat];
+    const catName = ({ unit: '机体', rank: '机体', team: '机体', char: '驾驶员', weapon: '武器', mod: '零件', supp: '战舰', picku: '机体', pickc: '驾驶员', teamp: '驾驶员', feat: '机体/驾驶员', tbuff: '机体' })[cat];
     panel.innerHTML = `
       <div class="sheet-h"><b>选择${hasSeries ? '标签 / 作品系列' : '标签'}</b><span class="x" id="sx">✕</span></div>
       <div class="hint">${listMode === 'series' ? `共 ${series.length} 个系列 · 计数=机体数` : `共 ${tags.length} 个标签 · 计数=当前分类命中数（${catName}）`}</div>
@@ -1268,6 +1276,12 @@ async function openTagPicker(cat, onChange) {
         <span class="hint" style="margin-right:2px">版本:</span>
         <span class="chip ${f.sp ? 'on' : ''}" data-v="sp">${cat === 'unit' ? '筛 · SP可强化' : 'SP · 常规武器'}</span>
         <span class="chip ${f.ssp ? 'on' : ''}" data-v="ssp">${cat === 'unit' ? '筛 · 有SSP武器' : 'SSP · 强化武器'}</span>
+      </div>` : ''}
+      ${cat === 'feat' ? `
+      <div class="chips tight"><span class="hint" style="align-self:center;margin-right:2px">出击场地:</span>
+        ${[['', '无限制'], ['space', '宇宙'], ['atm', '空中'], ['ground', '地上'], ['surface', '水面'], ['water', '水中']].map(([kk, ll]) =>
+          `<span class="chip ${(f.terr || '') === kk ? (kk === '' ? 'on' : 'gold') : ''}" data-fterr="${kk}">${ll}</span>`).join('')}
+        <span class="hint" style="align-self:center;margin-left:2px">×不能出击的机体不入列</span>
       </div>` : ''}
       ${_showRR ? `
       <div class="chips tight"><span class="hint" style="align-self:center;margin-right:2px">稀有度:</span>
@@ -1303,6 +1317,7 @@ async function openTagPicker(cat, onChange) {
       if (['weapon', 'rank', 'team'].includes(cat) && !f.sp && !f.ssp) f[v] = 1; // 武器口径至少保留一个版本
       counts = buildCounts(); if (hasSeries) series = buildSeries(); draw();
     });
+    panel.querySelectorAll('[data-fterr]').forEach(el => el.onclick = () => { f.terr = el.dataset.fterr; draw(); });   // feat: 出击场地筛选
     panel.querySelectorAll('[data-id]').forEach(el => el.onclick = () => {
       const id = cat === 'supp' ? el.dataset.id : +el.dataset.id;
       sel = sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id]; keepScroll = true; draw();
@@ -2614,7 +2629,7 @@ function buildRanking(f, cfg, opts = {}) {
     const _ub = isNonUR ? uStatBase(un, 'atk', s3On, spOn)
                         : { base: un.sp_max_atk || un.max_atk, mult: STAR_MULT[effStar] };
     const sspAdd = (isNonUR && P.sspU !== false && spOn && s3On) ? sspGainOf(un, 10).atk : 0;   // SSP满10 攻击加成(需三星+SP)
-    const uBase = Math.floor((_ub.base + sspAdd) * _ub.mult * (1 + allPct / 100));   // SSP加在★倍率之前(游戏口径)
+    const uBase = Math.floor((_ub.base + sspAdd) * _ub.mult);   // SSP加在★倍率之前(游戏口径); 攻方全能力%与舰长/队伍增强同口径(加算组, 见下方uAtk)
     const shipHit = !!(ship && ((shipTags.size && [...meta.tags].some(x => shipTags.has(x))) || (ship.series.length && meta.series && ship.series.includes(meta.series))));
     const shipPct = shipHit ? ship.pct : 0;
     const shipFlat = ship ? ship.atkFlat : 0;
@@ -2639,7 +2654,7 @@ function buildRanking(f, cfg, opts = {}) {
       /* 帕累托前沿: 伤害对(cAtk,增伤,暴击)单调↑ → 剪除被支配者后精确比较 */
       const arr = sub.map(x => {
         const fa = first ? firstActOfRows(x.skRows, [a], fdth) : null;   // 首动技: 值增幅按该属性
-        return { x, fa, cAtk: Math.floor(pStat(x.p, a, P.pSpU) * (1 + ((x.b[a] || 0) + (fa && fa.k === 'stat' ? fa.v : 0) + allPct) / 100)) };
+        return { x, fa, cAtk: Math.floor(pStat(x.p, a, P.pSpU) * (1 + ((x.b[a] || 0) + (fa && fa.k === 'stat' ? fa.v : 0)) / 100)) };
       });
       arr.sort((m, n) => n.cAtk - m.cAtk);
       const front = [];
@@ -2654,7 +2669,7 @@ function buildRanking(f, cfg, opts = {}) {
           if (!vigorAllows(w.id, it.x.vigor)) continue;   // 战意不足(强势以下)不能用「超强势以上」限定武器
           const vigor = it.x.vigor;
           const uPct = (P.passive ? unitPassiveAtkPct(un.id, vigor, P.condAll, opts.enemyMeta, sspWOn) : 0) + (P.skills ? unitSkillAtkPct(un.id) : 0);
-          const uAtk = Math.floor(uBase * (1 + (uPct + shipPct + bAtk + (it.x.b.atk || 0)) / 100)) + shipFlat;
+          const uAtk = Math.floor(uBase * (1 + (uPct + shipPct + bAtk + allPct + (it.x.b.atk || 0)) / 100)) + shipFlat;
           const rate = Math.min(100, (w.crit_rate || 0) + it.x.pc.rate);
           const critOn = cfg.crit && (it.x.pc.guar || rate > 0);
           const eeT = it.x.b.dmg + (it.fa && it.fa.k === 'burst' ? it.fa.v : 0);
@@ -2883,7 +2898,11 @@ function featRarRoleCache() {
 function featFilterMatch(tt, tid) {
   const ff = filt('feat');
   const wantRar = ff.rar || null, wantRole = ff.role || null;
-  if (!ff.tags.length && !(ff.series || []).length && !wantRar && !wantRole) return true;
+  if (!ff.terr && !ff.tags.length && !(ff.series || []).length && !wantRar && !wantRole) return true;
+  if (ff.terr && tt === 'unit') {   // 出击场地: ×不能出击的机体不入列(与排行/组队同口径)
+    const tu = q1('SELECT terrain_space,terrain_atm,terrain_ground,terrain_surface,terrain_water FROM units WHERE id=?', [+tid]);
+    if (terrOf(tu || {}, ff.terr) === 1) return false;
+  }
   if (wantRar || wantRole) {
     const rr = featRarRoleCache()[(tt === 'char' ? 'c' : 'u') + tid];
     if (!rr || (wantRar && rr.rarity !== wantRar) || (wantRole && rr.role !== wantRole)) return false;
@@ -2958,6 +2977,8 @@ function pageTeam(v) {
   const ship = shipEffOf(sup, t.shipStar);
   const shipTagTxt = ship ? [...ship.tags, ...ship.series].slice(0, 4).join('·') : '';
   const selBuffs = teamBuffGroups().filter(g => t.buffs.includes(g.key));
+  const cbOn = !!(t.cbOn && t.cbuff && t.cbuff.tags && t.cbuff.tags.length && t.cbuff.pct > 0);   // 自定义增强: 勾选+多选标签/系列 + 全能力增强%
+  const selAll = cbOn ? selBuffs.concat([{ key: '__custom', tags: t.cbuff.tags, atk: t.cbuff.pct, def: t.cbuff.pct }]) : selBuffs;
   v.innerHTML = `
     <div class="card" style="padding:9px 12px; display:flex; gap:9px; align-items:center; cursor:pointer" id="picks">
       ${sup ? avTagR(sup.icon, null, sup.rarity) : '<span style="width:44px;height:44px;border-radius:9px;background:#0c1424;display:inline-block"></span>'}
@@ -3028,7 +3049,7 @@ function pageTeam(v) {
     </div>
     <div class="chips" style="align-items:center"><span class="hint" style="align-self:center;margin-right:2px">攻方全能力:</span>
       <input id="tatkup" type="number" value="${t.atkup}" style="width:56px;background:#0e1729;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:4px 8px;font-size:12px">%
-      <span class="hint">（作用于当前筛选的攻击机体）</span>
+      <span class="hint" title="与舰长「全能力值+X%」/队伍增强同口径: 计入机体攻击的加算组(不加成机师值)">（作用于机体攻击·与舰长/队伍增强同口径）</span>
     </div>
     <div class="chips" style="align-items:center"><span class="hint" style="align-self:center;margin-right:2px">防御目标:</span>
       <span class="chip ${t.guard ? 'gold' : ''}" id="tguard">选择防御${t.guard ? ' 开' : ' 关'}</span>
@@ -3043,7 +3064,7 @@ function pageTeam(v) {
       <span style="color:var(--dim)">▾</span></div>
     <div class="fbar"><span class="fbtn" id="ttag">☰ 标签/系列 <b>${(f.tags.length + ((f.series || []).length)) || ''}</b></span>
       <span class="fbtn" id="ttagp" style="margin-left:6px">☰ 驾驶员标签/系列 <b>${((filt('teamp').tags || []).length + ((filt('teamp').series || []).length)) || ''}</b></span>
-      <span class="ebtn" id="tbuff" style="font-size:11px;padding:4px 10px;border-radius:9px;background:#231a3d;border:1px solid #4a3a7a;color:#c9b8ff;font-weight:700;cursor:pointer">◈ 队伍增强${selBuffs.length ? ' · ' + selBuffs.length + ' 组' : ''} ›</span></div>
+      <span class="ebtn" id="tbuff" style="font-size:11px;padding:4px 10px;border-radius:9px;background:#231a3d;border:1px solid #4a3a7a;color:#c9b8ff;font-weight:700;cursor:pointer">◈ 队伍增强${selBuffs.length ? ' · ' + selBuffs.length + ' 组' : ''}${cbOn ? ' · 自定义+' + t.cbuff.pct + '%' : ''} ›</span></div>
     ${selBuffs.length ? `<div class="chips"><span class="hint" style="align-self:center">已选增强:</span>
       ${selBuffs.map(g => `<span class="tchip2" data-bdel="${esc(g.key)}">${esc(g.tags.join('·'))} 攻+${g.atk}${g.def ? ' 防+' + g.def : ''} <i>×</i></span>`).join('')}</div>` : ''}
     <div id="tarea"></div>`;
@@ -3060,7 +3081,7 @@ function pageTeam(v) {
     const _fk = o => JSON.stringify([o.tags || [], (o.series || []).slice().sort(), o.mode || 'and', o.rar ?? null, o.role ?? null]);
     const _gkey = JSON.stringify([   // 性能: 组队全量排名(842k 对)结果缓存 —— 显式列出全部影响输入(归一化为有效值, 防默认字段漂移)
       _fk(f), _fk(filt('teamp')),
-      !!t.skills, !!t.first, !!t.fdth, t.shipStar ?? 0, t.range ?? 'all', t.vigor || 'default', t.ca !== false, t.mp !== false,
+      !!t.skills, !!t.first, !!t.fdth, !!t.cbOn, (t.cbuff && t.cbuff.tags) ? [t.cbuff.tags, t.cbuff.pct] : null, t.shipStar ?? 0, t.range ?? 'all', t.vigor || 'default', t.ca !== false, t.mp !== false,
       t.prole ?? null, t.terr || '', t.buffs || null, t.tdef ?? 10000, t.tcdef ?? 750, t.defup ?? 0, t.atkup ?? 0,
       t.s3u !== false, t.spU !== false, t.sspU !== false, t.pSpU !== false, t.star ?? 3, t.rar ?? null, t.urole ?? null,
       t.wat ?? null, t.atk ?? null, t.suppId ?? null, t.dunit ?? null, t.dchar ?? null, t.prar ?? null]);
@@ -3068,7 +3089,7 @@ function pageTeam(v) {
     if (state.teamCache && state.teamCache.key === _gkey) G = state.teamCache.G;
     else {
       G = buildRanking(f, { targetDef: tDefUse, targetCharDef: tcDefUse, vigor: isAuto ? 'mid' : t.vigor, crit: false, range: t.range, rarity: t.rar || null, urole: t.urole || null, wat: t.wat || null, atk: t.atk || null, terr: t.terr || null },
-      { passive: true, cpassive: true, skills: !!t.skills, first: !!t.first, fdth: !!t.fdth, condAll: !!t.ca, autoVigor: isAuto, multiPhase: !!t.mp, ship, teamBuffs: selBuffs, allPct: t.atkup || 0, defReduce,
+      { passive: true, cpassive: true, skills: !!t.skills, first: !!t.first, fdth: !!t.fdth, condAll: !!t.ca, autoVigor: isAuto, multiPhase: !!t.mp, ship, teamBuffs: selAll, allPct: t.atkup || 0, defReduce,
         star: t.star ?? 3, spU: t.spU !== false, s3u: t.s3u !== false, sspU: t.sspU !== false, pSpU: t.pSpU !== false, pilotRar: t.prar || null,
         enemyMeta: du ? { ...metaOf(du.id), ctags: (dch && charMetaAll()[dch.id]) ? charMetaAll()[dch.id].tags : null } : null,
         defReduceFn: du ? (meta => defReduce + xSkillOf('redPct', meta)) : undefined,
@@ -3096,7 +3117,7 @@ function pageTeam(v) {
       const meta = metaOf(u.id);
       const hit = shipMatch(ship, meta);
       let bDef = 0, bHit = false;
-      for (const b of selBuffs) if (tbuffMatch(b, meta)) { bDef += b.def; bHit = true; }
+      for (const b of selAll) if (tbuffMatch(b, meta)) { bDef += b.def; bHit = true; }
       const hp0 = defStat(u, 'hp'), df0 = defStat(u, 'def');   // 星级(UR)/SP+SSP(非UR) 口径, 与机体页显示一致
       const hp = Math.floor(hp0 * (1 + (hit ? ship.pct : 0) / 100)) + (ship ? ship.hpFlat : 0);
       const df = Math.floor(df0 * (1 + (hit ? ship.pct : 0) / 100 + bDef / 100));
@@ -3128,7 +3149,7 @@ function pageTeam(v) {
       }
       if (best) r.sdef = best;
     }
-    const modeTxt = (t.first ? '首动' : (t.skills ? '全技能·被动+主动MP' : '第一击·被动MP')) + (t.first && t.fdth ? '·反死风险' : '') + (ship ? ' +舰' : '') + (selBuffs.length ? ' +阵' : '');
+    const modeTxt = (t.first ? '首动' : (t.skills ? '全技能·被动+主动MP' : '第一击·被动MP')) + (t.first && t.fdth ? '·反死风险' : '') + (ship ? ' +舰' : '') + (selBuffs.length ? ' +阵' : '') + (cbOn ? ' +自定义' : '');
     const _folded = k2 => !!(state.teamFold && state.teamFold[k2]);
     /* 进攻盾 TOP5: 可参与「反击时支援防御」(trait90, 需搭乘含对应标签/系列的机体) — 按有效耐久 eHP 排 */
     const csDrv = counterShieldDrivers().filter(d => (!t.prar || d.rarity === t.prar) && (!pfN || pfN(d)));
@@ -3143,7 +3164,7 @@ function pageTeam(v) {
         if (t.terr && terrOf(u, t.terr) === 1) continue;   // 出击不能不入榜
         const hit = shipMatch(ship, meta);
         let bDef = 0, bHit = false;
-        for (const b of selBuffs) if (tbuffMatch(b, meta)) { bDef += b.def; bHit = true; }
+        for (const b of selAll) if (tbuffMatch(b, meta)) { bDef += b.def; bHit = true; }
         const hp0 = defStat(u, 'hp'), df0 = defStat(u, 'def');
         const hp = Math.floor(hp0 * (1 + (hit ? ship.pct : 0) / 100)) + (ship ? ship.hpFlat : 0);
         const df = Math.floor(df0 * (1 + (hit ? ship.pct : 0) / 100 + bDef / 100));
@@ -3158,7 +3179,7 @@ function pageTeam(v) {
       ${csTop.map((r, i) => `<div class="trow${r.terrHalf ? ' halfmove' : ''}" data-id="${r.u.id}" style="cursor:pointer"><span class="rk ${i < 3 ? 'g' : ''}">${i + 1}</span>
         <span class="ticon-col">${avTagR(r.u.icon, r.u.role, r.u.rarity)}<span class="avw avsm"><span class="picon sm">${imgTag(r.d.icon)}</span>${roleBadge(r.d.role)}${rarB(r.d.rarity)}</span></span>
         <div class="nm">${esc(r.u.name)} ${rarTag(r.u.rarity)}<small>${esc(r.d.name)} <span class="tagx cond" style="margin-left:2px">${esc(r.d.reqTags.length ? 'TAG ' + r.d.reqTags.join('·') : 'SERIES ' + r.d.reqSeries.join('·'))}</span><br>耐久 ${fmt(r.hp0)} · 防御 ${fmt(r.df0)}${r.shipHit ? ' · <span style="color:#9fe8c0">舰+' + ship.pct + '%</span>' : ''}${r.buffHit ? ' · <span style="color:#c9b8ff">阵 防+' + r.buffDef + '%</span>' : ''}</small></div>
-        <span class="val g">eHP ${fmt(r.val)}</span></div>`).join('') || '<div class="kv" style="color:var(--dim)">无可选目标</div>'}
+        <span class="val g">eHP ${fmt(r.val)}<br><span style="font-size:9.5px;color:var(--dim);font-weight:400;white-space:nowrap">${terrMini(r.u.id)}</span></span></div>`).join('') || '<div class="kv" style="color:var(--dim)">无可选目标</div>'}
       </div>
     </div>`;
     if (sup3) for (const r of sup3) {   // 支援型行: 机体全部武器的增伤/降防特效并集(叠驾驶员88/SSP)
@@ -3166,7 +3187,7 @@ function pageTeam(v) {
       r.fxSup = unitDamageFxOf(r.unitId, r.pilot.id, f, sspWOn2, t.pSpU !== false,
         { condAll: !!t.ca, vigor: r.vigor, sspU: t.sspU !== false });
     }
-    const section = (title, color, arr, isDef, showFx, fkey) => `<div class="card" style="padding:6px 12px">
+    const section = (title, color, arr, isDef, showFx, fkey, terrOn) => `<div class="card" style="padding:6px 12px">
       <h4 style="color:${color};display:flex;justify-content:space-between;align-items:baseline;gap:8px"><span>${title}</span>${fkey ? `<span class="foldbtn" data-fold="${fkey}" style="cursor:pointer;font-size:10px;opacity:.85;flex:none">${_folded(fkey) ? '▸ 展开' : '▾ 折叠'}</span>` : ''}</h4>
       <div data-fbody="${fkey || ''}"${fkey && _folded(fkey) ? ' style="display:none"' : ''}>
       ${arr.map((r, i) => `<div class="trow${r.terrHalf ? ' halfmove' : ''}" data-id="${isDef ? r.u.id : r.unitId}"${isDef && r.sdef ? ' data-sdef="' + r.sdef.c.id + '"' : ''} style="cursor:pointer"><span class="rk ${i < 3 ? 'g' : ''}">${i + 1}</span>
@@ -3174,7 +3195,7 @@ function pageTeam(v) {
         <div class="nm">${esc(isDef ? r.u.name : r.unit.name)} ${rarTag(isDef ? r.u.rarity : r.unit.rarity)}<small>${isDef
           ? '耐久 ' + fmt(r.hp0) + ' · 防御 ' + fmt(r.df0) + (r.shipHit ? ' · <span style="color:#9fe8c0">舰+' + ship.pct + '%</span>' : '') + (r.buffHit ? ' · <span style="color:#c9b8ff">阵 防+' + r.buffDef + '%</span>' : '') + (r.sdef ? ' · <span style="color:#8fc4ff">支防+2 ' + esc(r.sdef.c.name) + (r.sdef.dPct ? ' 防+' + r.sdef.dPct + '%' : '') + ' 守备' + fmt(r.sdef.guardEff) + (r.sdef.cPct ? '(' + (r.sdef.cPct > 0 ? '+' : '') + r.sdef.cPct + '%)' : '') + (r.sdef.rPct ? ' 减伤' + r.sdef.rPct + '%' : '') + '</span>' : '')
           : esc(r.pilot.name) + supCountsBadge(supCountsOf(r.pilot.id, r.unitId, r.vigor, t.ca, t.pSpU !== false)) + ' · ' + (isAuto ? (r.mp ? Engine.VIGOR[r.vigor].label + '(MP' + r.mp + ')' : '气势0') : '气势' + Engine.VIGOR[r.vigor].label) + ' · ' + esc(r.weapon.name) + '<span style="color:#8fc4ff"> 射程' + r.weapon.range_min + '-' + r.weapon.range_max + (r.weapon.type === 3 ? '·MAP' : '') + (AATTR[r.weapon.weapon_attr] ? '·' + AATTR[r.weapon.weapon_attr] : '') + '</span>' + (r.uwMult != null && r.uwMult < 100 ? ' · <span style="color:#ff9f43">' + (r.uwMult === 0 ? '水中不可用' : '水中伤害减半') + '</span>' : '') + (showFx && r.fxSup ? ' · <span style="color:#f5c451">' + esc(r.fxSup) + '</span>' : '') + (r.shipHit ? ' · <span style="color:#9fe8c0">舰+' + r.shipPct + '%</span>' : '') + (r.buffHit ? ' · <span style="color:#c9b8ff">阵 攻+' + r.buffAtk + (r.buffDef ? '/防+' + r.buffDef : '') + '%</span>' : '')}</small></div>
-        <span class="val g">${isDef ? 'eHP ' + fmt(r.val) : fmt(r.dmg)}</span></div>`).join('') || '<div class="kv" style="color:var(--dim)">无</div>'}
+        <span class="val g">${isDef ? 'eHP ' + fmt(r.val) : fmt(r.dmg)}${terrOn ? '<br><span style="font-size:9.5px;color:var(--dim);font-weight:400;white-space:nowrap">' + terrMini(isDef ? r.u.id : r.unitId) + '</span>' : ''}</span></div>`).join('') || '<div class="kv" style="color:var(--dim)">无</div>'}
       </div>
     </div>`;
     const proleTxt = ({ 1: '仅攻击型驾驶员', 3: '仅支援型驾驶员', 2: '仅防御型驾驶员' })[t.prole] || '全部驾驶员';
@@ -3195,8 +3216,8 @@ function pageTeam(v) {
       + section('攻击型 TOP10 · 单发伤害（' + modeTxt + ' · ' + proleTxt + '）', 'var(--red)', atk, false, false, 'team_atk') +
       section('攻击型 × 支援型驾驶员 TOP10 · 输出（' + modeTxt + '）', 'var(--orange)', atkSup, false, false, 'team_atsup') +
       section('支援型 TOP10 · 输出（' + modeTxt + ' · 仅支援型驾驶员）', 'var(--green)', sup3, false, true, 'team_sup') +
-      section('防御型 TOP10 · 输出（' + modeTxt + ' · 仅防御型驾驶员）', '#c9b8ff', defOut, false, false, 'team_defout') +
-      section('防御型 TOP10 · 有效耐久 eHP' + ((ship || selBuffs.length) ? '（含' + (ship ? '舰' : '') + (selBuffs.length ? '阵' : '') + '）' : ''), 'var(--blue)', defUnits, true, false, 'team_dehp')
+      section('防御型 TOP10 · 输出（' + modeTxt + ' · 仅防御型驾驶员）', '#c9b8ff', defOut, false, false, 'team_defout', true) +
+      section('防御型 TOP10 · 有效耐久 eHP' + ((ship || selBuffs.length) ? '（含' + (ship ? '舰' : '') + (selBuffs.length ? '阵' : '') + '）' : ''), 'var(--blue)', defUnits, true, false, 'team_dehp', true)
       + csCard;
     $('tarea').querySelectorAll('.trow').forEach(el => el.onclick = () => { const u = q1('SELECT name FROM units WHERE id=?', [+el.dataset.id]); if (u) push({ page: 'unit', title: u.name, id: +el.dataset.id }); });
     $('tarea').querySelectorAll('[data-fold]').forEach(el => el.onclick = ev => {
@@ -3305,6 +3326,17 @@ function openTeamDefPicker(v) {
 function showTeamBuffs() {
   const groups = teamBuffGroups();
   let sel = (state.team.buffs || []).slice();
+  /* 自定义增强: 标签/系列多选(任一命中) + 全能力增强% → 持有者机体 攻击/防御+% */
+  const fT = filt('tbuff');
+  let cbPct = Math.max(0, +((state.team.cbuff || {}).pct) || 0);
+  let tbCk = !!state.team.cbOn;
+  const cbNames = () => {
+    const td = tagNameDict(), smap = {};
+    q('SELECT id,name FROM series').forEach(r => smap[r.id] = r.name);
+    return [...fT.tags.map(id => td[id]).filter(Boolean), ...(fT.series || []).map(id => smap[id]).filter(Boolean)];
+  };
+  const cbPrev = () => { const n = cbNames(); return n.length ? '已选 ' + n.length + ' 项: ' + esc(n.slice(0, 4).join('·')) + (n.length > 4 ? '…' : '') : '未选择（点左侧按钮选择标签/系列, 可多选）'; };
+  const commitCustom = () => { state.team.cbuff = { tagIds: [...fT.tags], seriesIds: [...(fT.series || [])], tags: cbNames(), pct: cbPct }; state.team.cbOn = tbCk; };
   groups.forEach(g => { if (!g.isChar && g.shipTags === undefined) g.shipTags = shipTagsOfUnit(+g.target_id); });
   const tbShip = state.team.suppId ? shipEffOf(q1('SELECT * FROM supporters WHERE id=?', [state.team.suppId]), state.team.shipStar || 0) : null;
   const tbShipHl = g => {                      // 条目里的机体被当前战舰加成 → 绿框
@@ -3316,6 +3348,12 @@ function showTeamBuffs() {
     <span style="display:block;color:var(--dim);font-size:10.5px">同部队『${esc(g.tags.join('·') || '—')}』: ${g.atk ? '攻击力+<b style="color:#9fe8c0">' + g.atk + '%</b>' : ''}${g.atk && g.def ? ' · ' : ''}${g.def ? '防御力+<b style="color:#8fc4ff">' + g.def + '%</b>' : ''}（永久）${g.desc ? '<br>' + esc(g.desc) : ''}</span></span></div>`;
   const draw = s => groups.filter(g => !s || ciHas(g.owner, s) || ciHas(g.tags.join('·'), s) || ciHas(g.reqName, s)).map(item).join('');
   const bind = panel => {
+    const cp = panel.querySelector('#cbpct');
+    if (cp) cp.oninput = () => { cbPct = Math.max(0, +cp.value || 0); };
+    const ck = panel.querySelector('#cbck');
+    if (ck) ck.onclick = () => { tbCk = !tbCk; ck.classList.toggle('on', tbCk); const hl = panel.querySelector('#cbckh'); if (hl) hl.textContent = tbCk ? '已启用' : '勾选后生效'; };
+    const bt = panel.querySelector('#cbtag');
+    if (bt) bt.onclick = () => { state.team.buffs = sel; commitCustom(); _sheetBack = () => showTeamBuffs(); openTagPicker('tbuff', null); };
     panel.querySelectorAll('[data-g]').forEach(el => el.onclick = () => {
       const k = el.dataset.g;
       sel = sel.includes(k) ? sel.filter(x => x !== k) : [...sel, k];
@@ -3325,6 +3363,16 @@ function showTeamBuffs() {
   };
   const shipHint = tbShip ? ' · <span style="color:#7df0a8">绿框 = 该项机体被「' + esc(q1('SELECT name FROM supporters WHERE id=?', [state.team.suppId]).name) + '」加成</span>' : '';
   pickSheet('◈ 队伍增强 · ' + groups.length + ' 组（可多选）', draw(''), bind, draw,
+    `<div style="margin:2px 2px 8px;padding:8px 10px;border:1px dashed #4a3a7a;border-radius:10px;background:#181030">
+      <div style="font-size:12px;font-weight:700;color:#c9b8ff;display:flex;align-items:center;gap:6px"><span class="ck ${tbCk ? 'on' : ''}" id="cbck" title="勾选后生效"></span>◈ 自定义增强<span class="hint" id="cbckh">${tbCk ? '已启用' : '勾选后生效'}</span></div>
+      <div class="btnrow" style="align-items:center;margin-top:5px;gap:6px">
+        <span class="bs" id="cbtag">☰ 标签/系列</span>
+        <span class="hint" style="margin-left:4px">全能力增强</span>
+        <input id="cbpct" type="number" min="0" max="999" placeholder="0" value="${cbPct || ''}" style="width:54px;background:#0e1729;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:2px 6px;font-size:11px">%
+      </div>
+      <div class="hint" id="cbprev" style="margin-top:4px">${cbPrev()}</div>
+      <div class="hint">勾选标题左侧多选框后生效：对持有所选标签/系列的机体 攻击/防御同时 +X%（任一命中），计入组队全部 TOP 计算</div>
+    </div>` +
     `<div class="hint">勾选后计入组队榜单：同部队内持有对应标签/系列的机体 攻击力/防御力提升${shipHint}</div>`);
   const panel = $('sheetPanel');
   const foot = document.createElement('div');
@@ -3332,7 +3380,7 @@ function showTeamBuffs() {
   foot.innerHTML = `<div class="btnrow"><span class="bs" id="tclear">清空</span><span class="bp" id="tapply">应用 · ${sel.length} 组增强</span></div>`;
   panel.appendChild(foot);
   $('tclear').onclick = () => { sel = []; panel.querySelectorAll('.ck').forEach(ck => ck.classList.remove('on')); $('tapply').textContent = '应用 · 0 组增强'; };
-  $('tapply').onclick = () => { state.team.buffs = sel; closeSheet(); render(); };
+  $('tapply').onclick = () => { state.team.buffs = sel; commitCustom(); closeSheet(); render(); };
 }
 
 /* ------------ 特性页 ------------ */
@@ -3925,7 +3973,16 @@ function pageFeat(v) {
       const avF = r.target_type === 'char' ? avDrv(r.ic, r.rl, r.rr) : avTagR(r.ic, r.rl, r.rr);
       return `<div class="lrow" data-t="${r.target_type}" data-id="${r.target_id}">${pipHtml ? `<span class="ticon-col">${avF}${pipHtml}</span>` : avF}
         <div class="nm" style="flex:1">${esc(r.nm || r.target_id)} ${r.rr ? rarTag(r.rr) : ''} ${k === 'unit_skill' ? `<div style="color:var(--dim);font-size:10px;margin-top:1px">${esc(r.label || '')}</div>` : `<span style="color:var(--dim);font-size:10px">${esc(r.label || '')}</span>`}
-        <small>${esc((sub || '').slice(0, 60))}</small></div>${k === 'preemptive' ? `<span class="prebest" data-uid="${r.target_id}" style="flex:none;text-align:right;color:var(--dim);font-size:10px;line-height:1.35;max-width:33%;margin-left:6px">…</span>` : ''}</div>`; }).join('');
+        <small>${esc((sub || '').slice(0, 60))}</small>${(k === 'move6' || k === 'move7') && r.target_type === 'unit' ? (() => {   // 6移动/支援防御范围7: 文字下方显示地形适性
+          const tu = q1('SELECT terrain_space a, terrain_atm b, terrain_ground c, terrain_surface d, terrain_water e FROM units WHERE id=?', [r.target_id]);
+          if (!tu) return '';
+          const tt = [['宇宙', tu.a], ['空中', tu.b], ['地上', tu.c], ['水面', tu.d], ['水中', tu.e]].map(([nm2, v2]) => {
+            const sym = v2 === 3 ? '○' : v2 === 2 ? '△' : v2 === 1 ? '×' : '—';
+            const col = v2 === 3 ? '#7df0a8' : v2 === 2 ? '#f5c451' : v2 === 1 ? '#ff6b6b' : 'var(--dim)';
+            return `${nm2}<b style="color:${col}">${sym}</b>`;
+          }).join(' ');
+          return `<div style="color:var(--dim);font-size:10px;margin-top:1px">地形 ${tt}</div>`;
+        })() : ''}</div>${k === 'preemptive' ? `<span class="prebest" data-uid="${r.target_id}" style="flex:none;text-align:right;color:var(--dim);font-size:10px;line-height:1.35;max-width:33%;margin-left:6px">…</span>` : ''}</div>`; }).join('');
   if ($('fsort')) $('fsort').onclick = () => openSortPicker(fctx, () => pageFeat(v));
   if ($('ftag')) $('ftag').onclick = () => openTagPicker('feat', () => pageFeat(v));
   $('farea').querySelectorAll('.lrow').forEach(el => el.onclick = () => {
@@ -3959,8 +4016,9 @@ function pageFeat(v) {
 
 /* ------------ 更新中心 ------------ */
 /* APP 版本更新说明(更新中心展示, 只保留最新版) */
-const APP_CHANGELOG = [
-  ['0.103', '新增「首动」按钮(计算/组队/排行): 按官方AI优先度只算首动那1个技能 — 减伤(威力抵御)>+MP(首动超一击+30%)>+命中闪避>攻击爆裂(+损伤%)>摇摆闪避>增幅(对应属性武器, 随机体变化)>爆击增幅>保留EN; 满血满EN·够得着假设, 「反死风险」独立开关; 首动下多段增益锁定(仅全技能可开); 主动技能⇄首动二选一'],
+const APP_CHANGELOG = [   // 更新说明(=最新版) / 更新日志(更新中心按钮, v0.103起每版一项)
+  ['0.104', '组队页「队伍增强」新增自定义增强，修复组队页全能力增强对基础值错误生效的bug，7移动标签改名支援防御范围7。'],
+  ['0.103', '新增「首动」按钮(计算/组队/排行)：按官方AI优先度只算首动那1个技能 — 减伤(威力抵御)>+MP(首动超一击+30%)>+命中闪避>攻击爆裂(+损伤%)>摇摆闪避>增幅(按对应属性武器，随机体变化)>爆击增幅>保留EN；假设满血满EN·够得着；「反死风险」独立开关；主动技能⇄首动二选一；首动/第一击下多段增益锁定(仅全技能可开)。'],
 ];
 function pageUpdate(v) {
   const meta = {}; q('SELECT * FROM meta').forEach(m => meta[m.key] = m.value);
@@ -3991,11 +4049,12 @@ function pageUpdate(v) {
     </div>
     <div class="card"><h4>APP 版本</h4>
       <div style="font-size:12px;line-height:1.7">当前版本 <b style="color:#bcd0f2" id="appver">—</b><span id="appnew"></span></div>
+      <div class="kv" style="color:var(--dim);font-size:10px;margin-top:2px;word-break:break-all">安装包 SHA256：<span id="apksha" style="font-weight:400">读取中…</span></div>
       <div class="kv" id="appnote" style="color:var(--dim);font-size:10.5px;margin-top:4px">检测中…</div>
       <div class="btnrow" style="margin-top:9px"><span class="bp" id="appupd" style="display:none">下载并安装新版本</span></div>
     </div>
-    <div class="card"><h4>APP 更新说明</h4>
-      ${APP_CHANGELOG.map(([v2, s2]) => `<div class="kv" style="line-height:1.5"><b style="color:#bcd0f2">v${v2}</b> <span style="color:var(--dim);font-size:10.5px">${esc(s2)}</span></div>`).join('')}
+    <div class="card"><h4>APP 更新说明 <span class="fbtn" id="updlog" style="margin-left:6px;font-size:10.5px">📋 更新日志</span></h4>
+      ${APP_CHANGELOG.slice(0, 1).map(([v2, s2]) => `<div class="kv" style="line-height:1.5"><b style="color:#bcd0f2">v${v2}</b> <span style="color:var(--dim);font-size:10.5px">${esc(s2)}</span></div>`).join('')}
     </div>
     <div class="card"><h4>更新历史</h4>
       ${log.map(l => { let s = {}; try { s = JSON.parse(l.summary_json || '{}'); } catch (e) {}
@@ -4006,13 +4065,19 @@ function pageUpdate(v) {
       <div class="kv" style="color:var(--dim)">作者：<b style="color:#cfe0ff">DeepSeek</b> · SD高达永恒助手</div>
       <div class="kv" style="color:var(--dim)">开源地址（源代码 + 关键数据 + APK 下载）：<b id="osurl" style="color:#9fd8ff;text-decoration:underline">github.com/ppgs5/SDGGE-Helper</b></div>
       <div class="kv" style="color:var(--dim)">免VPN镜像（无需梯子即可打开）：<b id="osurl2" style="color:#9fd8ff;text-decoration:underline">gh-proxy.com/https://github.com/ppgs5/SDGGE-Helper</b></div>
-      <div class="kv" style="color:var(--dim)">数据来源：soshage / gamekee · 数据仓库：github.com/ppgs5/ggen-data</div></div>`;
+      <div class="kv" style="color:var(--dim)">数据来源：soshage / gamekee · 数据仓库：github.com/ppgs5/ggen-data</div>
+      <div class="kv" style="color:var(--dim);margin-top:5px;line-height:1.65;border-top:1px dashed var(--line);padding-top:5px"><b style="color:#f5c451">免责条款</b>：本工具为第三方非官方作品，与 Bandai Namco（万代）无任何关联；使用存在账号风控与设备安全风险，使用者风险自担；仅供数据查询与伤害计算的学习交流。游戏内容版权归原权利方所有，数据整理自公开资料站（soshage / gamekee）。</div></div>`;
   const msg = html => { const el = $('upmsg'); if (el) el.innerHTML = html; };
   const MB = n => (n / 1048576).toFixed(n > 10485760 ? 1 : 2) + ' MB';
   /* —— APP 自更新: app_version.json(数据仓库) → Android.downloadApk → 系统安装 —— */
   function cmpVer(a, b) { const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number); for (let i = 0; i < Math.max(pa.length, pb.length); i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d > 0 ? 1 : -1; } return 0; }
   let appVer = ''; try { appVer = hasBridge && window.Android.appInfo ? (JSON.parse(window.Android.appInfo() || '{}').versionName || '') : ''; } catch (e) {}
   $('appver').textContent = appVer ? ('v' + appVer) : '网页版';
+  if ($('apksha')) {   // 安装包 SHA256(动态读取当前 APK; 与 Release 页资产哈希一致)
+    let sha = '';
+    try { sha = (typeof window.Android !== 'undefined' && window.Android.apkSha256) ? window.Android.apkSha256() : ''; } catch (e) {}
+    $('apksha').textContent = sha || '（网页版无安装包）各版本 SHA256 见 Releases 页';
+  }
   const checkApp = async () => {
     if (!appVer) { $('appnote').textContent = '网页模式无 APP 更新（安装 APK 后可用）；作者：DeepSeek'; return; }
     /* 并行探测各线路取最高版本(镜像/CDN 可能缓存旧清单——顺序取第一条会误报已是最新) */
@@ -4048,6 +4113,13 @@ function pageUpdate(v) {
     }
   };
   checkApp();
+  if ($('updlog')) $('updlog').onclick = () => {
+    const panel = $('sheetPanel');
+    panel.innerHTML = `<div class="sheet-h"><b>更新日志</b><span class="x" id="sx">✕</span></div>
+      <div style="padding:4px 14px 16px">${APP_CHANGELOG.map(([v2, s2]) => `<div class="kv" style="line-height:1.55;margin:8px 0"><b style="color:#bcd0f2">v${v2}</b><br><span style="color:var(--dim);font-size:11px">${esc(s2)}</span></div>`).join('')}</div>`;
+    $('sx').onclick = closeSheet;
+    $('sheet').classList.add('open');
+  };
   if ($('osurl')) $('osurl').onclick = () => { if (window.Android && window.Android.openUrl) window.Android.openUrl('https://' + $('osurl').textContent); };
   if ($('osurl2')) $('osurl2').onclick = () => { if (window.Android && window.Android.openUrl) window.Android.openUrl('https://' + $('osurl2').textContent); };
   /* 完整更新（兜底）: Java 侧下载整库并热替换 */
