@@ -75,7 +75,7 @@ def main():
     copy_tree(os.path.join(ROOT, 'web'), os.path.join(PUB, 'web'),
               excludes=['patches', 'version.json'])
     os.makedirs(os.path.join(PUB, 'data'), exist_ok=True)
-    for f in ('build_db.py', 'publish_update.py', 'publish_app.py', 'sync_public.py',
+    for f in ('build_db.py', 'publish_update.py', 'publish_app.py', 'sync_public.py', 'fix_unit_terrain.py',
               'manual_chars.json', 'manual_units.json', 'manual_weapon_fx.json'):
         shutil.copy2(os.path.join(ROOT, 'data', f), os.path.join(PUB, 'data', f))
     for f in glob.glob(os.path.join(ROOT, 'data', 'names_zhcn*.json')):
