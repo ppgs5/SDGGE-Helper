@@ -8,8 +8,8 @@ android {
         applicationId "com.ggen.helper"
         minSdk 24
         targetSdk 34
-        versionCode 104
-        versionName "0.104"
+        versionCode 105
+        versionName "0.105"
     }
 
     buildTypes {

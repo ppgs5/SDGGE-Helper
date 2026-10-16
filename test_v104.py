@@ -118,13 +118,14 @@ try:
         pg.evaluate("() => { state.stack = []; push({ page: 'update', title: '更新中心' }); }")
         pg.wait_for_timeout(1000)
         ut = pg.evaluate("() => document.body.innerText")
-        assert 'v0.104' in ut and '组队页「队伍增强」新增自定义增强' in ut and '修复组队页全能力增强对基础值错误生效的bug' in ut, ut[:0]
+        import re as _re
+        assert 'APP 更新说明' in ut and _re.search(r'v0\.\d+', ut), ut[:0]   # 说明卡显示最新版(版本号随轮次更新)
         assert pg.evaluate("() => !!document.getElementById('updlog')"), '缺更新日志按钮'
         pg.evaluate("() => document.getElementById('updlog').click()")
         pg.wait_for_timeout(500)
         lt = pg.evaluate("() => document.getElementById('sheetPanel').innerText")
         assert '更新日志' in lt and 'v0.104' in lt and 'v0.103' in lt, lt[:90]
-        assert lt.count('v0.1') == 2, lt[:90]   # 每个版本一项
+        assert lt.count('v0.1') == pg.evaluate("() => APP_CHANGELOG.length"), lt[:90]   # 每个版本一项(条数=changelog长度)
         pg.evaluate("() => document.getElementById('sx').click()")
         assert '免责条款' in ut and '与 Bandai Namco' in ut, ut[:0]   # 关于卡免责条款
         shaf = pg.evaluate("() => document.getElementById('apksha').textContent")   # 网页版回退文案

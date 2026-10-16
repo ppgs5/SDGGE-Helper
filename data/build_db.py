@@ -16,7 +16,8 @@ OUT = os.path.join(HERE, 'ggen.db')
 VERSION = 'v' + datetime.date.today().strftime('%Y.%m.%d')
 NOW = int(time.time())
 
-CH_LEVEL_CAP = {1: 60, 2: 70, 3: 80, 4: 90, 5: 100}   # 驾驶员稀有度→等级上限(N/R/SR/SSR/UR), SP后100
+CH_LEVEL_CAP = {1: 60, 2: 70, 3: 80, 4: 90, 5: 100}
+SER_N = {}   # 系列id(str)→名, build时填充   # 驾驶员稀有度→等级上限(N/R/SR/SSR/UR), SP后100
 
 
 def cap_val(base, mx, cap):
@@ -69,20 +70,81 @@ def tagnames(cond):
 
 
 def cond_names(cond):
-    """条件对象 → 具体标签/系列名列表（仅取有名字的）"""
+    """条件对象 → 具体标签/系列名列表（仅取有名字的; 含驾驶员标签character_tags）"""
     if not cond:
         return []
     out = [t['name'] for t in (cond.get('tags') or []) if isinstance(t, dict) and t.get('name')]
     s = cond.get('series')
     if isinstance(s, dict) and s.get('name'):
         out.append(s['name'])
+    for t in (cond.get('character_tags') or []):   # 驾驶员标签条件(如 优势：新人类 → 敌方驾驶员含标签)
+        if isinstance(t, dict) and t.get('name'):
+            out.append(t['name'])
     return out
+
+
+def cond_split(cond):
+    """条件对象 → (纯标签名, 系列名) 分离, 供「标签」/「系列」占位分别填充"""
+    if not cond:
+        return [], None
+    tags = [t['name'] for t in (cond.get('tags') or []) if isinstance(t, dict) and t.get('name')]
+    for t in (cond.get('character_tags') or []):
+        if isinstance(t, dict) and t.get('name'):
+            tags.append(t['name'])
+    s = cond.get('series')
+    ser = s.get('name') if isinstance(s, dict) and s.get('name') else None
+    if not ser:   # character_series 对象数组(驾驶员系列条件, 如 適性：新人类&机动战士高达NT)
+        cs = cond.get('character_series')
+        if isinstance(cs, list) and cs and isinstance(cs[0], dict) and cs[0].get('name'):
+            ser = cs[0]['name']
+    if not ser:   # unit_series 以id串表示(如 "1100,1500") → 经 SER_N 取名
+        nn = [SER_N.get(x.strip()) for x in str(cond.get('unit_series') or '').split(',') if x.strip()]
+        nn = [x for x in nn if x]
+        if nn:
+            ser = nn[0]
+    return tags, ser
 
 
 def enrich_traits(trs):
     """把 desc 中的占位符替换为具体标签/系列/单位类型名
     （条件内联在 active_condition / trait_boost / target_condition 里）"""
     ROLE = {'1': '攻击型', '2': '防御型', '3': '支援型'}
+    # ── 同部队多条件授予desc修复: 官网原文把多条件拍平(两条都写同一标签, 如 三代顽驮无【高达】2%+【高达】3%)
+    #    → 按各条件自身 tags+grants 重建 desc(与 _scan_ability_features 的队伍增强预扫同源逻辑)
+    _tb2 = {}
+    for t in (trs or []):
+        tr2 = (t or {}).get('trait') or {}
+        tc = tr2.get('target_condition') or {}
+        if tc.get('target') != 'SameGroup' or not (tr2.get('granted_trait_set') or []):
+            continue
+        key = str(tc.get('id') or tc.get('trait_condition_set_id') or '')
+        g = _tb2.setdefault(key, {'tags': tagnames(tc), 'parts': []})
+        for x in tr2.get('granted_trait_set'):
+            gd = ((x or {}).get('trait') or {}).get('desc') or ''
+            m2 = re.search(r'(攻击力|攻擊力|防御力|防禦力|机动力|機動力|射击值|射擊值|格斗值|格鬥值|觉醒值|覺醒值)提升(\d+)%', gd)
+            if m2 and (m2.group(1) + '提升' + m2.group(2) + '%') not in g['parts']:
+                g['parts'].append(m2.group(1) + '提升' + m2.group(2) + '%')
+    if len([g for g in _tb2.values() if g['tags'] and g['parts']]) >= 2:
+        for t in (trs or []):
+            tr2 = (t or {}).get('trait') or {}
+            d0 = tr2.get('desc') or ''
+            if '【' not in d0 or '提升' not in d0:
+                continue
+            if (tr2.get('target_condition') or {}).get('target') != 'SameGroup':
+                continue
+            perm = '(永久)' in d0
+            lines = []
+            for g in _tb2.values():
+                if not (g['tags'] and g['parts']):
+                    continue
+                vals = {}
+                for p in g['parts']:
+                    m3 = re.match(r'(.+?)提升(\d+)%$', p)
+                    vals.setdefault(m3.group(2), []).append(m3.group(1))
+                ptxt = '、'.join('、'.join(v) + '提升' + k + '%' for k, v in vals.items())
+                lines.append('赋予同部队内持有【' + '、'.join(g['tags']) + '】标签的单位，\n' + ptxt + ('(永久)' if perm else ''))
+            if len(lines) >= 2:
+                tr2['desc'] = '\n'.join(lines)
     for t in (trs or []):
         tr = (t or {}).get('trait') or {}
         d = tr.get('desc') or ''
@@ -98,6 +160,10 @@ def enrich_traits(trs):
             if isinstance(s, dict) and s.get('name'):
                 ser = s['name']
                 break
+        if not ser:   # 兜底: unit_series 以id串表示的系列
+            for cc in (ac, tb, tc):
+                _, ser = cond_split(cc)
+                if ser: break
         role = None
         for cc in (ac, tb, tc):
             r = cc.get('unit_role')
@@ -110,30 +176,64 @@ def enrich_traits(trs):
                 d = d.replace('【條件1】', '【' + '、'.join(names) + '】').replace('【条件1】', '【' + '、'.join(names) + '】')
         if '【條件2】' in d or '【条件2】' in d:
             names = tbn or tcn
+            if not names:   # 兜底: 取 granted_trait_set 各条目条件名
+                for x in (tr.get('granted_trait_set') or []):
+                    gt = (x or {}).get('trait') or {}
+                    names = cond_names(gt.get('target_condition') or {}) or cond_names(gt.get('active_condition') or {})
+                    if names: break
+            if not names:   # 兜底2: 同组SameGroup(13)兄弟trait的目标条件(如 NT-D適性 授予同部队【NT-D】)
+                cur = str((t or {}).get('tid'))
+                for sib in (trs or []):
+                    st = (sib or {}).get('trait') or {}
+                    if st.get('trait_type') != 13 or str((sib or {}).get('tid')) != cur:
+                        continue
+                    names = cond_names(st.get('target_condition') or {})
+                    if names: break
             if names:
                 d = d.replace('【條件2】', '【' + '、'.join(names) + '】').replace('【条件2】', '【' + '、'.join(names) + '】')
         names = acn or tbn or tcn
         # 标签／系列 组合
+        tgo, sero = cond_split(ac)
+        if not tgo: tgo, sero2 = cond_split(tb)
+        if not tgo: tgo, sero3 = cond_split(tc)
         if '「標籤／系列」' in d or '「标签／系列」' in d:
             parts = []
-            if names:
-                parts.append('「' + '、'.join(names) + '」標籤')
+            if tgo:
+                parts.append('「' + '、'.join(tgo) + '」標籤')
             if ser:
                 parts.append('「' + ser + '」系列')
             if parts:
                 rep = '／'.join(parts)
                 d = d.replace('上述「標籤／系列」', rep).replace('上述「标签／系列」', rep)
-        if names:
-            nm_s = '、'.join(names)
-            d = d.replace('上述「標籤」', '「' + nm_s + '」標籤')
-            d = d.replace('上述「标签」', '「' + nm_s + '」标签')
-            d = d.replace('上述標籤', '「' + nm_s + '」標籤')
-            d = d.replace('上述标签', '「' + nm_s + '」标签')
+        if tgo:
+            nm_t = '、'.join(tgo)
+            d = d.replace('上述「標籤」', '「' + nm_t + '」標籤')
+            d = d.replace('上述「标签」', '「' + nm_t + '」标签')
+            d = d.replace('上述標籤', '「' + nm_t + '」標籤')
+            d = d.replace('上述标签', '「' + nm_t + '」标签')
+        # 空标签槽+系列模板(如 搭乘单位含有上述「標籤」及「系列」, 但数据只含系列条件) → 折叠为系列
+        if not tgo and ser and ('及「系列」' in d):
+            for p in ('上述「標籤」及「系列」', '上述「标签」及「系列」', '「標籤」及「系列」', '「标签」及「系列」'):
+                d = d.replace(p, '「' + ser + '」系列')
+        # 裸「標籤」槽(无名字前置, 如 (標籤條件)MP提升) → 名字填入引号内
+        if tgo and ('「標籤」' in d or '「标签」' in d) and '的「' not in d:
+            nm_i = '、'.join(tgo)
+            d = d.replace('「標籤」', '「' + nm_i + '」').replace('「标签」', '「' + nm_i + '」')
+        # 裸占位(slot含后接 时/的 等): 条件有对应值时填充
         if role:
             d = d.replace('上述「類型」', '「' + role + '」類型').replace('上述「类型」', '「' + role + '」类型')
+            d = d.replace('「類型」', '「' + role + '」').replace('「类型」', '「' + role + '」')
+        elif '「类型」' in d or '「類型」' in d:   # 类型占位但unit_role缺字段(如 耐久orW系列组): 用group_id判定
+            gid = str(ac.get('group_id') or tb.get('group_id') or tc.get('group_id') or '')
+            gr = '耐久型' if '耐久' in gid else ('攻击型' if ('攻撃' in gid or '攻击' in gid) else ('支援型' if '支援' in gid else None))
+            if gr:
+                d = d.replace('「類型」', '「' + gr + '」').replace('「类型」', '「' + gr + '」')
+        if ser and '「系列」' in d:
+            d = d.replace('「系列」', '「' + ser + '」系列')
         if ser:
             d = d.replace('上述「系列」', '「' + ser + '」系列')
             d = d.replace('上述系列', '「' + ser + '」系列')
+        d = d.replace('上述「', '「').replace('上述', '')   # 兜底清理全部替换后残留的「上述」
         tr['desc'] = d
 
 
@@ -177,6 +277,10 @@ DROP TABLE IF EXISTS weapon_fx; CREATE TABLE weapon_fx(
  weapon_id INT, level INT, sort INT, name TEXT, desc TEXT);
 DROP TABLE IF EXISTS weapon_use; CREATE TABLE weapon_use(
  weapon_id INT, sort INT, text TEXT);
+DROP TABLE IF EXISTS weapon_hpcost; CREATE TABLE weapon_hpcost(
+ weapon_id INTEGER PRIMARY KEY, hp INT, mp INT);
+DROP TABLE IF EXISTS weapon_area; CREATE TABLE weapon_area(
+ weapon_id INTEGER PRIMARY KEY, space INT, atm INT, ground INT, surface INT, water INT);
 DROP TABLE IF EXISTS weapon_flag; CREATE TABLE weapon_flag(
  weapon_id INT, sort INT, flag TEXT);
 DROP TABLE IF EXISTS weapon_ssp_traits; CREATE TABLE weapon_ssp_traits(
@@ -306,6 +410,8 @@ def main():
                 ser.setdefault(str(w['id']), w['name'])
     db.executemany('INSERT OR REPLACE INTO series VALUES(?,?)', list((ser or {}).items()))
     counts['series'] = len(ser or {})
+    global SER_N
+    SER_N = dict(ser or {})   # 系列id→名 全局(供 条件unit_series id 填充) 
 
     # ---------- 机体 ----------
     units = find_list('gget_unitlist.html', 'mechanism', 'transform_to')
@@ -391,7 +497,7 @@ def main():
     db.execute("DELETE FROM characters WHERE source='manual'")
     # 手动收录机体(manual_units.json): 同样先清干净(含武器/特性/效果/使用限制/标签/能力/特性行)
     _mu_ids = "(SELECT id FROM units WHERE source='manual')"
-    for t2 in ('weapon_traits', 'weapon_fx', 'weapon_use', 'weapon_flag'):
+    for t2 in ('weapon_traits', 'weapon_fx', 'weapon_use', 'weapon_flag', 'weapon_hpcost', 'weapon_area'):
         db.execute(f"DELETE FROM {t2} WHERE weapon_id IN (SELECT id FROM weapons WHERE unit_id IN {_mu_ids})")
     db.execute(f"DELETE FROM weapons WHERE unit_id IN {_mu_ids}")
     for t2 in ('unit_tags', 'unit_abilities'):
@@ -614,6 +720,35 @@ def main():
         except Exception as e:
             print('weapon_use load warn:', e)
     counts['weapon_use'] = nuse
+
+    # ---------- 武器使用限制: HP/MP消耗（scrape/fetch_weapon_hpcost.py → data/weapon_hpcost.json） ----------
+    hpf = os.path.join(HERE, 'weapon_hpcost.json')
+    nhpc = 0
+    if os.path.exists(hpf):
+        try:
+            hpc = json.load(open(hpf, encoding='utf-8'))
+            for wid_s, v in hpc.items():
+                hp2, mp2 = (list(v) + [0, 0])[:2] if isinstance(v, list) else (0, 0)
+                if (hp2 or 0) <= 0 and (mp2 or 0) <= 0: continue   # 0/0 与失败(-1)不落库
+                db.execute('INSERT OR REPLACE INTO weapon_hpcost VALUES(?,?,?)', (int(wid_s), int(hp2), int(mp2)))
+                nhpc += 1
+        except Exception as e:
+            print('weapon_hpcost load warn:', e)
+    counts['weapon_hpcost'] = nhpc
+
+    # ---------- 武器使用地点（scrape/extract_weapon_area.py 离线解析存档 → data/weapon_area.json） ----------
+    areaf = os.path.join(HERE, 'weapon_area.json')
+    nar = 0
+    if os.path.exists(areaf):
+        try:
+            am = json.load(open(areaf, encoding='utf-8'))
+            for wid_s, v in am.items():
+                if not (isinstance(v, list) and len(v) == 5): continue
+                db.execute('INSERT OR REPLACE INTO weapon_area VALUES(?,?,?,?,?,?)', (int(wid_s), *[int(x or 0) for x in v]))
+                nar += 1
+        except Exception as e:
+            print('weapon_area load warn:', e)
+    counts['weapon_area'] = nar
     # 注意: SSP武器本体没有「战意为超强势以上」限制(游戏实测 强化巨剑SSP vs 强化巨剑);
     # 该限制仅来自武器 tension>=4(抓取侧写入), 此处不再对 is_ssp 统一追加
 
