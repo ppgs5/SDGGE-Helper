@@ -272,7 +272,7 @@ DROP TABLE IF EXISTS weapons; CREATE TABLE weapons(
  range_min INT, range_max INT, hit_rate INT, crit_rate INT, is_ssp INT,
  wsc_json TEXT, wtc_json TEXT, name_hant TEXT, source TEXT, updated_at INT, data_version TEXT);
 DROP TABLE IF EXISTS weapon_traits; CREATE TABLE weapon_traits(
- weapon_id INT, level INT, trait_type INT, trait_value INT, target_cond TEXT, desc TEXT, cond TEXT);
+ weapon_id INT, level INT, trait_type INT, trait_value INT, target_cond TEXT, desc TEXT, cond TEXT, effect_name TEXT);
 DROP TABLE IF EXISTS weapon_fx; CREATE TABLE weapon_fx(
  weapon_id INT, level INT, sort INT, name TEXT, desc TEXT);
 DROP TABLE IF EXISTS weapon_use; CREATE TABLE weapon_use(
@@ -382,6 +382,166 @@ def convert_to_simplified(db):
     return True
 
 
+
+def import_master_ult(db):
+    """导入游戏主数据导出(ggen_master 2026-10-17, 源文件已复制到 data/master/):
+       ult_group(unit_id, group_id, type_index, redo_unit_id) — ULT改造组权威数据(含形态机经 main_unit_id 继承)
+       + features(feature='unit_skill') 追加: ULT改造机体技能(改造形态, 含特性值) 与缺失的基础机体技能"""
+    import csv
+    M = os.path.join(HERE, '..', 'data', 'master')
+    if not os.path.isdir(M):
+        return {}
+    def rows(fn):
+        with open(os.path.join(M, fn), encoding='utf-8') as f:
+            return list(csv.DictReader(f))
+    main_of, ult_of = {}, {}
+    for r in rows('units.csv'):
+        uid = str(r['id']).strip(); m = str(r.get('main_unit_id') or uid).strip() or uid
+        main_of[uid] = m
+        ult_of[uid] = str(r.get('is_ult') or '0').strip() == '1'
+    grp = {}
+    for r in rows('MUnitUltGroup.csv'):
+        uid = str(r['<MainUnitId>k__BackingField']).strip()
+        grp[uid] = (str(r['<UnitUltGroupId>k__BackingField']).strip(), int(float(r['<UnitUltTypeIndex>k__BackingField'])))
+    type3 = {g: u for u, (g, t) in grp.items() if t == 3}
+    forms_of = {}
+    for uid, m in main_of.items():
+        if uid != m and ult_of.get(uid):
+            forms_of.setdefault(m, []).append(uid)
+    out = []
+    for uid, (g, t) in grp.items():
+        redo = None
+        if t in (1, 2):
+            t3 = type3.get(g)
+            if t3:
+                if main_of.get(uid) == uid:
+                    redo = t3
+                else:                                  # 形态机(type1/2 主的形态) → 类型3主的同形态
+                    fs = forms_of.get(t3) or []
+                    redo = fs[0] if fs else t3
+        out.append((int(uid), int(g), t, int(redo) if redo else None))
+    for uid, m in main_of.items():                     # 形态机继承主形态的组/阶段
+        if uid in grp or uid == m or not ult_of.get(uid) or m not in grp:
+            continue
+        g, t = grp[m]
+        redo = None
+        if t in (1, 2):
+            t3 = type3.get(g)
+            fs = (forms_of.get(t3) or []) if t3 else []
+            redo = fs[0] if fs else t3
+        out.append((int(uid), int(g), t, int(redo) if redo else None))
+    db.executescript('DROP TABLE IF EXISTS ult_group; CREATE TABLE ult_group(unit_id INTEGER PRIMARY KEY, group_id INTEGER, type_index INTEGER, redo_unit_id INTEGER);')
+    db.executemany('INSERT OR REPLACE INTO ult_group VALUES(?,?,?,?)', out)
+
+    # 机体技能源数据: 基础(unit_skills.csv) + ULT改造技能(MUnitUltCustomSkillSetContent + MUnitSkill + 语言表)
+    lang = {}
+    for r in rows('unit_skill_lang.csv'):
+        lang[str(r['lang_id']).strip()] = r['text']
+    def sl(v):
+        return lang.get(str(v or '').strip(), '')
+    mskill = {str(r['<Id>k__BackingField']).strip(): r for r in rows('MUnitSkill.csv')}
+    traits = {}
+    for r in rows('MUnitSkillTrait.csv'):
+        sid = str(r['<UnitSkillId>k__BackingField']).strip()
+        try:
+            tv = int(float(r['<TraitValue>k__BackingField'] or 0)); tt = int(float(r['<TraitTypeIndex>k__BackingField'] or 0))
+        except Exception:
+            continue
+        if tt: traits.setdefault(sid, []).append({'trait_type_index': tt, 'trait_value': tv})
+    sk = []
+    for r in rows('unit_skills.csv'):
+        sk.append((int(r['unit_id']), str(r['skill_id']).strip(), r['skill_name'], r['description'],
+                   int(float(r['duration'] or 0)), int(float(r['usage_limit'] or 0)), int(float(r['sort'] or 0)), 'base'))
+    for r in rows('MUnitUltCustomSkillSetContent.csv'):
+        setid = str(r['<UnitUltCustomSkillSetId>k__BackingField']).strip()
+        sid = str(r['<UnitSkillId>k__BackingField']).strip()
+        sort = int(float(r['<SortOrder>k__BackingField'] or 0))
+        ms = mskill.get(sid) or {}
+        name = sl(ms.get('<NameLanguageId>k__BackingField')); desc = sl(ms.get('<DescriptionLanguageId>k__BackingField'))
+        dur = int(float(ms.get('<Duration>k__BackingField') or 0)); use = int(float(ms.get('<UsageLimit>k__BackingField') or 0))
+        t3 = type3.get(setid)
+        if not t3:
+            continue
+        for u in [t3] + (forms_of.get(t3) or []):
+            sk.append((int(u), sid, name, desc, dur, use, sort, 'ult'))
+    seen, sk2 = set(), []
+    for x in sk:
+        k2 = (x[0], x[1], x[7])
+        if k2 in seen: continue
+        seen.add(k2); sk2.append(x)
+    db.executescript('DROP TABLE IF EXISTS unit_skills; CREATE TABLE unit_skills(unit_id INTEGER, skill_id TEXT, name TEXT, desc TEXT, duration INTEGER, usage_limit INTEGER, sort INTEGER, source TEXT);')
+    db.executemany('INSERT INTO unit_skills VALUES(?,?,?,?,?,?,?,?)', sk2)
+
+    # ---- ULT改造整理表 (ult_*.csv, 2026-10-17 导出): 改造数值 / 三选一能力 / ULT武器 ----
+    gmap = {uid: g for uid, g, t, redo in out}
+    ucs = []
+    for r in rows('ult_custom.csv'):
+        uid = int(r['unit_id'])
+        ucs.append((uid, gmap.get(uid), int(r.get('ult_type') or 0) or None,
+                    int(r['max_hp'] or 0), int(r['max_en'] or 0), int(r['max_atk'] or 0),
+                    int(r['max_def'] or 0), int(r['max_mob'] or 0)))
+    db.executescript('DROP TABLE IF EXISTS ult_custom; CREATE TABLE ult_custom(unit_id INTEGER PRIMARY KEY, group_id INTEGER, type_index INTEGER, max_hp INTEGER, max_en INTEGER, max_atk INTEGER, max_def INTEGER, max_mob INTEGER);')
+    db.executemany('INSERT OR REPLACE INTO ult_custom VALUES(?,?,?,?,?,?,?,?)', ucs)
+
+    usk = {}
+    for u, sid, name, desc, dur, use, sort, src in sk2:
+        if src != 'ult':
+            continue
+        g = gmap.get(u)
+        if g and (g, sid) not in usk:
+            usk[(g, sid)] = (g, sid, name, desc, sort, json.dumps(traits.get(sid) or [], ensure_ascii=False))
+    db.executescript('DROP TABLE IF EXISTS ult_skills; CREATE TABLE ult_skills(group_id INTEGER, skill_id TEXT, name TEXT, desc TEXT, sort INTEGER, traits_json TEXT, PRIMARY KEY(group_id, skill_id));')
+    db.executemany('INSERT OR REPLACE INTO ult_skills VALUES(?,?,?,?,?,?)', list(usk.values()))
+
+    uw = []
+    for r in rows('ult_weapons.csv'):
+        uw.append((int(r['unit_id']), int(r['phase']), int(r['weapon_id']), r.get('weapon_name') or ''))
+    db.executescript('DROP TABLE IF EXISTS ult_weapons; CREATE TABLE ult_weapons(unit_id INTEGER, phase INTEGER, weapon_id INTEGER, name TEXT, PRIMARY KEY(unit_id, phase, weapon_id));')
+    db.executemany('INSERT OR REPLACE INTO ult_weapons VALUES(?,?,?,?)', uw)
+
+    # 同步进 features(feature='unit_skill'): 图鉴详情/特性页「单位技能」直接展示; unitSkillAtkPct 口径自动含攻击%特性
+    have = {(r[0], r[1]) for r in db.execute("SELECT target_id, label FROM features WHERE feature='unit_skill'")}
+    have_targets = {r[0] for r in db.execute("SELECT DISTINCT target_id FROM features WHERE feature='unit_skill'")}   # 已有基础机体技能的目标(站侧命名略有差异, 不重复加)
+    nf = 0
+    for u, sid, name, desc, dur, use, sort, src in sk2:
+        label = name or ('单位技能【%s】' % sid)
+        if src == 'base' and u in have_targets: continue   # 基础技能已有(避免同一技能两种译名并存)
+        if (u, label) in have: continue
+        pr = {'desc': desc, 'duration': dur, 'usage_limit': use, 'skill_id': sid, 'source': src,
+              'traits': traits.get(sid) or []}
+        if src == 'ult': pr['ult'] = 1
+        db.execute('INSERT INTO features(target_type,target_id,feature,label,params_json) VALUES(?,?,?,?,?)',
+                   ('unit', u, 'unit_skill', label, json.dumps(pr, ensure_ascii=False)))
+        nf += 1
+
+    # 同步 防御/回避标志 + 地形 + 原配机师补缺: 站侧列表页有 133 台缺 defend/evade(单机数据有), 116 台变形态地形需按游戏主数据校正;
+    # default_char_id 仅补空值(现有 gacha 原配优先), 主数据 recommend_char_id 为官方推荐驾驶员
+    mtr = {str(r['unit_id']).strip(): r for r in rows('unit_terrain.csv')}
+    nflags = nter = nchar = 0
+    for r in rows('units.csv'):
+        uid = int(r['id'])
+        cur = db.execute('SELECT defend,evade,terrain_space,terrain_atm,terrain_ground,terrain_surface,terrain_water,default_char_id FROM units WHERE id=?', (uid,)).fetchone()
+        if not cur:
+            continue
+        d = 1 if str(r['can_defend']).strip() == '1' else 0
+        e = 1 if str(r['can_evade']).strip() == '1' else 0
+        if (cur[0], cur[1]) != (d, e):
+            db.execute('UPDATE units SET defend=?,evade=? WHERE id=?', (d, e, uid))
+            nflags += 1
+        t = mtr.get(str(uid))
+        if t:
+            tv = tuple(int(float(t[k] or 0)) for k in ('space', 'air', 'ground', 'surface', 'water'))
+            if tuple(cur[2:7]) != tv:
+                db.execute('UPDATE units SET terrain_space=?,terrain_atm=?,terrain_ground=?,terrain_surface=?,terrain_water=? WHERE id=?', (*tv, uid))
+                nter += 1
+        rec = int(float(r.get('recommend_char_id') or 0))
+        if rec and not cur[7] and db.execute('SELECT 1 FROM characters WHERE id=?', (rec,)).fetchone():
+            db.execute('UPDATE units SET default_char_id=? WHERE id=?', (rec, uid))
+            nchar += 1
+    return {'ult_group': len(out), 'unit_skills': len(sk2), 'unit_skill_feats': nf,
+            'ult_custom': len(ucs), 'ult_skills': len(usk), 'ult_weapons': len(uw),
+            'unit_flags': nflags, 'unit_terrain': nter, 'unit_default_char': nchar}
+
 def main():
     db = sqlite3.connect(OUT)
     db.executescript(DDL)
@@ -405,7 +565,7 @@ def main():
         if ks == {'id', 'name'}:            # 124 系列表
             for x in arr:
                 ser[str(x['id'])] = x['name']
-        elif 'icon' in ks and 'desc' in ks and 'scenario_stages' in ks:  # 112 作品表
+        elif 'icon' in ks and 'desc' in ks and ('scenario_stages' in ks or 'scenario_stage_series_id' in ks):  # 作品表(新数据由 scenario_stages → scenario_stage_series_id)
             for w in arr:
                 ser.setdefault(str(w['id']), w['name'])
     db.executemany('INSERT OR REPLACE INTO series VALUES(?,?)', list((ser or {}).items()))
@@ -582,6 +742,13 @@ def main():
 
     # ---------- 武器 ----------
     wd = find_dict('gget_weapon.html', 'weapons')
+    _mwt = {}   # 主数据武器特质 id → 名称(含 光束/特殊/物理损伤提升): 效果文本的正确来源
+    _mwt_p = os.path.join(HERE, 'master', 'weapon_traits.csv')
+    if os.path.exists(_mwt_p):
+        import csv as _csv
+        with open(_mwt_p, encoding='utf-8') as _f:
+            for _r in _csv.DictReader(_f):
+                _mwt[str(_r.get('trait_id') or '').strip()] = _r.get('name') or ''
     n = nt = 0
     for w in (wd or {}).get('weapons', []):
         g = w.get('growth') or {}
@@ -599,9 +766,10 @@ def main():
             tr = t.get('trait') or {}
             if not tr.get('trait_type'):
                 continue
-            db.execute('INSERT INTO weapon_traits VALUES(?,?,?,?,?,?,?)',
+            db.execute('INSERT INTO weapon_traits VALUES(?,?,?,?,?,?,?,?)',
                        (w['id'], t.get('level'), tr.get('trait_type'), tr.get('trait_value'),
-                        str(tr.get('target_condition_set_id') or ''), (tr.get('desc') or '').replace('\n', ' '), ''))
+                        str(tr.get('target_condition_set_id') or ''), (tr.get('desc') or '').replace('\n', ' '), '',
+                        _mwt.get(str(t.get('trait_id') or '').strip(), '')))
             nt += 1
     counts['weapons'] = n
     counts['weapon_traits'] = nt
@@ -699,7 +867,7 @@ def main():
                 continue
             lvs = [l for (l,) in db.execute('SELECT DISTINCT level FROM weapon_traits WHERE weapon_id=? AND trait_type=?', [wid, tt])]
             for lv in lvs:
-                db.execute('INSERT INTO weapon_traits VALUES(?,?,?,?,?,?,?)', (wid, lv, tt, 3, '1000001', '', ''))
+                db.execute('INSERT INTO weapon_traits VALUES(?,?,?,?,?,?,?,?)', (wid, lv, tt, 3, '1000001', '', '', ''))
                 np3 += 1
     counts['ssp_p3'] = np3
 
@@ -1285,8 +1453,8 @@ def main():
                     wtc='[]', name_hant=w.get('name_hant') or w['name'], now=NOW, ver=VERSION))
                 for lv in range(1, 6):
                     for t in (w.get('traits') or []):
-                        db.execute('INSERT INTO weapon_traits VALUES(?,?,?,?,?,?,?)',
-                                   (wid, lv, t['trait_type'], t['trait_value'], '1000001', '', t.get('cond') or ''))
+                        db.execute('INSERT INTO weapon_traits VALUES(?,?,?,?,?,?,?,?)',
+                                   (wid, lv, t['trait_type'], t['trait_value'], '1000001', '', t.get('cond') or '', ''))
                         _nwt += 1
                     for f in (w.get('fx') or []):
                         db.execute('INSERT INTO weapon_fx VALUES(?,?,?,?,?)',
@@ -1405,6 +1573,12 @@ def main():
             print('gamekee load warn:', e)
     counts['gamekee_use'] = ngk_use
     counts['gamekee_fx'] = ngk_fx
+
+    # ---------- 游戏主数据导入 (ggen_master 导出): ULT改造组 + 机体技能 ----------
+    try:
+        counts.update(import_master_ult(db) or {})
+    except Exception as e:
+        print('master ult import warn:', e)
 
     db.commit()
     db.execute('VACUUM')
