@@ -201,7 +201,7 @@ const FEAT = {
   revive_escape: '复活·换机', revive_heal: '复活·回血', extra_action: '额外行动+1', counter_shield: '进攻盾', range_buff: '范围增益',
   auto_extra_action: '自带额外行动', preemptive: '先发攻击', support_atk: '支援攻击+2', support_def: '支援防御+2', mp_skill: '有MP技能', sway_evade: '摇摆闪避',
   team_buff: '队伍增强', ally_buff_self: '队友对自身增强', unit_skill: '单位技能',
-  shield_defense: '盾牌防御', transform: '变形机构', swap: '换装',
+  shield_defense: '盾牌防御', transform: '变形机构', swap: '换装', first_hit_immune: '第一击损伤无效',
   move6: '6移动', move7: '支援防御范围7', baobi: '必暴组合', tekko: '特攻', range6: '6射程', range7: '7射程', range_up: '射程加',
 };
 const WATTR = { 1: ['ranged'], 2: ['melee'], 3: ['awaken'], 4: ['ranged', 'melee'], 5: ['ranged', 'awaken'], 6: ['melee', 'awaken'], 7: ['ranged', 'melee', 'awaken'] };
@@ -1989,6 +1989,12 @@ function pageUnit(v, sp) {
       }).join('')}
       <span class="hint" style="align-self:center">○正常移动 △移动力减半 ×不能出击</span>
     </div>
+    ${(() => {
+      const mechs = q('SELECT mechanism_id, name, desc, type, value FROM unit_mechanisms WHERE unit_id=? ORDER BY mechanism_id', [u.id]);
+      if (!mechs.length) return '';
+      return `<div class="chips tight"><span class="hint" style="align-self:center;margin-right:2px">装置:</span>${mechs.map(m => `<span class="chip" style="padding:2px 9px" title="${esc(m.desc || '')}">${esc(m.name)}${m.value ? ` <b>${m.value}%</b>` : ''}</span>`).join('')}</div>
+      <div class="subnote" style="text-align:left;margin:-2px 0 8px">${mechs.map(m => `<div style="margin:2px 0"><b>${esc(m.name)}</b>：${esc(String(m.desc || '').replace(/\s*\n\s*/g, ' '))}</div>`).join('')}</div>`;
+    })()}
     <div class="card"><h4>武器 · ${weapons.length}</h4>
       ${weapons.map(w => {
         const eff = q('SELECT trait_type, trait_value, desc, effect_name FROM weapon_traits WHERE weapon_id=? AND level=5', [w.id]);
@@ -2842,6 +2848,11 @@ function scenarioVigorOf(u, charId, t, sspOn) {
 }
 /* 防御侧被动(defPct 防御力%/cdefPct 守备%/redPct 减伤%): 条件按场景如实判定 —
    「进行支援防御时」=场景事实(sdefOn); 「攻击时/反击时」等动作条件与战意/场景条件仅在「条件被动=开·假设满足」时计入 */
+/* 姿态减伤: 选择防御 与 支援防御 是同一场战斗的互斥动作(不可能同时发生), 只取一次 -40%; 带盾再 -20% */
+function stanceReduceOf(t, hasShield) {
+  const st = (t && (t.guard || t.sdef)) ? 40 : 0;
+  return st + (st && hasShield ? 20 : 0);
+}
 function defenderSkills(unitId, charId, sdefOn, sspOn, vigor, condAll) {
   const out = { defPct: 0, cdefPct: 0, redPct: 0, x: [] };
   const meta = metaOf(unitId);
@@ -2854,7 +2865,7 @@ function defenderSkills(unitId, charId, sdefOn, sspOn, vigor, condAll) {
         let v = tr.trait_value || 0;
         if (v > 100) {   // 累计型编码值 → max开=最高N%; 条件被动开=1层(base); 否则0
           const mx = /最高\s*(\d+)%/.exec(d), bs = /提升\s*(\d+)%/.exec(d);
-          v = mx ? (state.maxOn ? +mx[1] : (condAll ? (+bs ? +bs[1] : 0) : 0)) : 0;
+          v = mx ? (state.maxOn ? +mx[1] : (condAll ? (bs ? +bs[1] : 0) : 0)) : 0;
         }
         if (v <= 0) continue;
         let kind = d.indexOf('防御力提升') >= 0 ? 'defPct'
@@ -3422,7 +3433,7 @@ function pageTeam(v) {
   const dSspOn = !!(du && du.rarity <= 4 && !du.ult && t.sspU !== false && (t.spU !== false) && (t.s3u !== false));
   const dSkill = du ? defenderSkills(du.id, t.dchar, !!t.sdef, dSspOn, scenarioVigorOf(du, t.dchar, t, dSspOn), !!t.ca) : { defPct: 0, cdefPct: 0, redPct: 0, x: [] };
   const hasShield = du ? !!q1("SELECT 1 x FROM features WHERE target_type='unit' AND target_id=? AND feature='shield_defense'", [du.id]) : false;
-  const stancePct = (t.guard ? 40 : 0) + (t.sdef ? 40 : 0) + ((t.guard || t.sdef) && hasShield ? 20 : 0);
+  const stancePct = stanceReduceOf(t, hasShield);   // 防御/支援防御互斥: 只取一次-40%, 盾牌-20%
   const defReduce = du ? (dSkill.redPct || 0) + stancePct : 0;
   const xSkillOf = (kind, meta) => (dSkill.x || []).reduce((s, r) => s + ((r.kind === kind && xMatch(r, meta)) ? r.v : 0), 0);   // 敌方条件技能按攻击方标签/驾驶员标签
   const dStat = (u, f) => {                                             // 防御方数值: 与排行同口径(SP/SSP/星数; ULT固定值); HP含无条件能力%
@@ -3607,8 +3618,9 @@ function pageTeam(v) {
       for (const b of selAll) if (tbuffMatch(b, meta)) { bDef += b.def; bHp += (b.hp || 0); bHit = true; }   // 队伍增强/自定义增强: 攻防+HP(自定义全能力=攻防hp机动, 不含EN)
       const hp0 = defStat(u, 'hp'), df0 = defStat(u, 'def');   // 星级(UR)/SP+SSP(非UR) 口径, 与机体页显示一致
       const hp = Math.floor(hp0 * (1 + ((hit ? ship.pct : 0) + bHp + (t.oHp || 0)) / 100)) + (ship ? ship.hpFlat : 0);
-      const df = Math.floor(df0 * (1 + ((hit ? ship.pct : 0) + bDef + (t.oDef || 0)) / 100));   // 我方防御: 防御侧生效
-      return { u, hp0, df0, hp, df, val: Math.round(hp * (1 + df / 1000)), shipHit: hit, buffDef: bDef, buffHit: bHit, terrHalf: t.terr ? terrOf(u, t.terr) === 2 : false };
+      const ub = defenderSkills(u.id, null, true, false, (isAuto ? 'mid' : t.vigor), !!t.ca);   // 机体侧被动防御%(含 max 满层)
+      const df = Math.floor(df0 * (1 + ((hit ? ship.pct : 0) + bDef + (t.oDef || 0) + ub.defPct) / 100));   // 我方防御: 防御侧生效 + 被动防御%
+      return { u, hp0, df0, hp, df, ub, defPct: ub.defPct, val: Math.round(hp * (1 + df / 1000)), shipHit: hit, buffDef: bDef, buffHit: bHit, terrHalf: t.terr ? terrOf(u, t.terr) === 2 : false };
     }).filter(r => (!t.terr || (terrOf(r.u, t.terr) !== 1 && (!t.terrO || terrOf(r.u, t.terr) === 3))) && (!t.shieldF || shieldUnitSet().has(r.u.id)));   // 排序在「受」计算后: 选目标→按剩余HP, 未选→eHP
     /* 双支援防御(支援防御+2次)驾驶员: eHP行推荐「综合防御能力」最高者 —
        支援防御时防御力提升(defPct, 作用于机体防御) + 守备值(含守备值提升) + 标签减伤(≈×10 防御点) */
@@ -3664,7 +3676,7 @@ function pageTeam(v) {
       return out.join('、');
     };
     for (const r of defUnits) {
-      const ub = defenderSkills(r.u.id, null, true, false, vgDef, !!t.ca);   // 机体侧(常数, 用于取驾驶员增量)
+      const ub = r.ub || defenderSkills(r.u.id, null, true, false, vgDef, !!t.ca);   // 机体侧(常数, 用于取驾驶员增量; 复用已算的被动防御%)
       let best = null;
       for (const c of sdefCands) {
         if (!pilotCanDrive(c.id, r.u.id)) continue;
@@ -3704,7 +3716,8 @@ function pageTeam(v) {
         for (const b of selAll) if (tbuffMatch(b, meta)) { bDef += b.def; bHp += (b.hp || 0); bHit = true; }   // 队伍增强/自定义增强: 攻防+HP
         const hp0 = defStat(u, 'hp'), df0 = defStat(u, 'def');
         const hp = Math.floor(hp0 * (1 + ((hit ? ship.pct : 0) + bHp + (t.oHp || 0)) / 100)) + (ship ? ship.hpFlat : 0);
-        const df = Math.floor(df0 * (1 + ((hit ? ship.pct : 0) + bDef + (t.oDef || 0)) / 100));
+        const ubPre = defenderSkills(u.id, null, !!t.sdef, false, vgDef, !!t.ca);
+        const df = Math.floor(df0 * (1 + ((hit ? ship.pct : 0) + bDef + (t.oDef || 0) + ubPre.defPct) / 100));
         const o = { u, d, hp0, df0, hp, df, val: Math.round(hp * (1 + df / 1000)), shipHit: hit, buffDef: bDef, buffHit: bHit, terrHalf: t.terr ? terrOf(u, t.terr) === 2 : false };
         const sspC = u.rarity <= 4 && !u.ult && t.sspU !== false && t.spU !== false && t.s3u !== false;   // recvOn 同口径
         const ubC = defenderSkills(u.id, null, !!t.sdef, sspC, vgDef, !!t.ca);
@@ -3790,7 +3803,7 @@ function pageTeam(v) {
       ${csTop.map((r, i) => `<div class="trow${r.terrHalf ? ' halfmove' : ''}" data-id="${r.u.id}" style="cursor:pointer"><span class="rk ${i < 3 ? 'g' : ''}">${i + 1}</span>
         <span class="ticon-col">${avTagR(r.u.icon, r.u.role, r.u.rarity)}<span class="avw avsm"><span class="picon sm">${imgTag(r.d.icon)}</span>${roleBadge(r.d.role)}${rarB(r.d.rarity)}</span></span>
         <div class="nm">${esc(r.u.name)} ${rarTag(r.u.rarity)}<small>${esc(r.d.name)} <span class="tagx cond" style="margin-left:2px">${esc(r.d.reqTags.length ? 'TAG ' + r.d.reqTags.join('·') : 'SERIES ' + r.d.reqSeries.join('·'))}</span><br>耐久 ${fmt(r.hp0)} · 防御 ${fmt(r.df0)}${r.shipHit ? ' · <span style="color:#9fe8c0">舰+' + ship.pct + '%</span>' : ''}${r.buffHit ? ' · <span style="color:#c9b8ff">阵 防+' + r.buffDef + '%</span>' : ''}${r.cnote ? ' · <span style="color:#f5c451">条件' + (du ? '' : '(假设)') + ':' + esc(r.cnote) + '</span>' : ''}</small></div>
-        <span class="val g">eHP ${fmt(r.val)}<br><span style="font-size:9.5px;color:var(--dim);font-weight:400;white-space:nowrap">${terrMini(r.u.id)}</span><br><span style="font-size:9.5px;font-weight:400;white-space:nowrap">${shieldMark(r.u.id)}${r.mob != null ? ' <span style="color:#8fc4ff;font-weight:700;font-size:9.5px;white-space:nowrap">移' + r.mob + '</span>' : ''}</span>${r.recv != null ? '<br><span style="color:#ff9f43;font-weight:700;font-size:9.5px;white-space:nowrap">受 ' + fmt(r.recv) + ' 剩' + (r.hp ? Math.max(0, Math.round((r.hp - r.recv) / r.hp * 100)) : 0) + '%</span>' : ''}${r.hp ? '<br><span style="font-size:9.5px;color:var(--dim);font-weight:400;white-space:nowrap">HP ' + fmt(r.hp) + '</span>' : ''}</span></div>`).join('') || '<div class="kv" style="color:var(--dim)">无可选目标</div>'}
+        <span class="val g">eHP ${fmt(r.val)}<br><span style="font-size:9.5px;color:var(--dim);font-weight:400;white-space:nowrap">${terrMini(r.u.id)}</span><br><span style="font-size:9.5px;font-weight:400;white-space:nowrap">${shieldMark(r.u.id)}${r.defPct ? ' <span style="color:#7df0a8;font-weight:700">防+' + r.defPct + '%</span>' : ''}${r.mob != null ? ' <span style="color:#8fc4ff;font-weight:700;font-size:9.5px;white-space:nowrap">移' + r.mob + '</span>' : ''}</span>${r.recv != null ? '<br><span style="color:#ff9f43;font-weight:700;font-size:9.5px;white-space:nowrap">受 ' + fmt(r.recv) + ' 剩' + (r.hp ? Math.max(0, Math.round((r.hp - r.recv) / r.hp * 100)) : 0) + '%</span>' : ''}${r.hp ? '<br><span style="font-size:9.5px;color:var(--dim);font-weight:400;white-space:nowrap">HP ' + fmt(r.hp) + '</span>' : ''}</span></div>`).join('') || '<div class="kv" style="color:var(--dim)">无可选目标</div>'}
       </div>
     </div>`;
     if (sup3) for (const r of sup3) {   // 支援型行: 机体全部武器的增伤/降防特效并集(叠驾驶员88/SSP)
@@ -3876,8 +3889,8 @@ function pageTeam(v) {
   if ($('todef')) $('todef').onchange = () => { t.oDef = +$('todef').value || 0; pageTeam(v); };
   if ($('tohp')) $('tohp').onchange = () => { t.oHp = +$('tohp').value || 0; pageTeam(v); };
   if ($('dclr')) $('dclr').onclick = (ev) => { ev.stopPropagation(); t.dunit = null; t.dchar = null; pageTeam(v); };
-  if ($('tguard')) $('tguard').onclick = () => { t.guard = !t.guard; pageTeam(v); };
-  if ($('tsdef')) $('tsdef').onclick = () => { t.sdef = !t.sdef; pageTeam(v); };
+  if ($('tguard')) $('tguard').onclick = () => { t.guard = !t.guard; if (t.guard) t.sdef = false; pageTeam(v); };   // 防御/支援防御 二选一(同一场战斗不可能同时发生)
+  if ($('tsdef')) $('tsdef').onclick = () => { t.sdef = !t.sdef; if (t.sdef) t.guard = false; pageTeam(v); };
   $('dpick').onclick = () => openTeamDefPicker(v);
   $('tca').onclick = () => { t.ca = !t.ca; pageTeam(v); };
   $('tsupact').onclick = () => { state.supAct = !(state.supAct !== false); pageTeam(v); };
@@ -4150,7 +4163,7 @@ function ultUnitSet() {   // ULT 机体 id 集(「特攻」屏蔽ULT开关用)
 }
 /* ------------ 特性页 ------------ */
 function pageFeat(v) {
-  const kinds = ['revive_escape', 'revive_heal', 'extra_action', 'auto_extra_action', 'preemptive', 'support_atk', 'support_def', 'counter_shield', 'range_buff', 'mp_skill', 'sway_evade', 'team_buff', 'ally_buff_self', 'unit_skill', 'shield_defense', 'transform', 'swap', 'move6', 'move7', 'baobi', 'tekko', 'range6', 'range7', 'range_up'];
+  const kinds = ['revive_escape', 'revive_heal', 'extra_action', 'auto_extra_action', 'preemptive', 'first_hit_immune', 'support_atk', 'support_def', 'counter_shield', 'range_buff', 'mp_skill', 'sway_evade', 'team_buff', 'ally_buff_self', 'unit_skill', 'shield_defense', 'transform', 'swap', 'move6', 'move7', 'baobi', 'tekko', 'range6', 'range7', 'range_up'];
   if (!state.featKind) state.featKind = 'revive_escape';
   v.innerHTML = `<div class="chips">${kinds.map(k => `<span class="chip ${state.featKind === k ? (k.startsWith('revive') ? 'gold' : 'on') : ''}" data-k="${k}">${FEAT[k]}</span>`).join('')}
     <span class="chip ${state.featPSpU !== false ? 'gold' : ''}" id="fpspu">驾驶员SP${state.featPSpU !== false ? ' 开' : ' 关'}</span></div>
@@ -4526,9 +4539,33 @@ function pageFeat(v) {
         return `<div class="lrow" data-id="${x.c.id}">${avDrv(x.c.icon, x.c.role, x.c.rarity)}
           <div class="nm">${esc(x.c.name)} ${rarTag(x.c.rarity)}<small>${parts.join(' · ')}</small></div>
           <span class="val" style="color:#9fe8c0;font-weight:800">MP+${x.pv + x.av}</span></div>`;
-      }).join('') + (mpList.length ? '' : '<div class="subnote" style="text-align:left">无满足条件的驾驶员</div>');
+      }).join('') + (mpList.length ? '' : '<div class="subnote" style="text-align:left">无满足条件的驾驶员</div>') +
+      (() => {   // 机体 MP: 线性扫 features 的 unit_skill, 有 MP 提升的按「主动MP」列出
+        if (flt === 'passive') return '';
+        const out = [];
+        for (const r of q("SELECT target_id, label, params_json FROM features WHERE feature='unit_skill'")) {
+          let p = {}; try { p = JSON.parse(r.params_json || '{}'); } catch (e) { continue; }
+          let v = 0;
+          for (const t of (p.traits || [])) if (t.trait_type_index === 12) v += (t.trait_value || 0);
+          if (!v && /MP/i.test(String(p.desc || ''))) { const m = /MP[^\d]{0,6}(\d+)/i.exec(String(p.desc)); if (m) v = +m[1]; }
+          if (v > 0 && featFilterMatch('unit', r.target_id)) out.push({ id: r.target_id, v, label: r.label });
+        }
+        const seen = new Set(out.map(x => x.id));
+        for (const r of q("SELECT g.unit_id uid, s.name, s.traits_json FROM ult_skills s JOIN ult_group g ON g.group_id=s.group_id")) {   // ULT 三选一里的 MP 提升
+          let ts = []; try { ts = JSON.parse(r.traits_json || '[]'); } catch (e) { continue; }
+          let v = 0;
+          for (const t of ts) if (t.trait_type_index === 12) v += (t.trait_value || 0);
+          if (v > 0 && !seen.has(r.uid) && featFilterMatch('unit', r.uid)) { seen.add(r.uid); out.push({ id: r.uid, v, label: r.name }); }
+        }
+        if (!out.length) return '';
+        return '<div class="subnote" style="text-align:left;margin:10px 2px 4px;font-weight:700">机体（主动MP）</div>' + out.map(x => {
+          const u = q1('SELECT name, icon, role, rarity FROM units WHERE id=?', [x.id]) || {};
+          return `<div class="lrow" data-ut="1" data-id="${x.id}">${avTag(u.icon, u.role)}<div class="nm">${esc(u.name || '')} ${rarTag(u.rarity)}<small>${esc(x.label || '')}</small></div><span class="val" style="color:#9fe8c0;font-weight:800">主动MP+${x.v}</span></div>`;
+        }).join('');
+      })();
     $('farea').querySelectorAll('[data-mpf]').forEach(el => el.onclick = () => { state._mpFltr = el.dataset.mpf || null; pageFeat(v); });
-    $('farea').querySelectorAll('.lrow').forEach(el => el.onclick = () => { const c = q1('SELECT name FROM characters WHERE id=?', [+el.dataset.id]); push({ page: 'char', title: c ? c.name : '', id: +el.dataset.id }); });
+    $('farea').querySelectorAll('.lrow[data-ut]').forEach(el => el.onclick = () => { const u = q1('SELECT name FROM units WHERE id=?', [+el.dataset.id]); push({ page: 'unit', title: u ? u.name : '', id: +el.dataset.id }); });
+    $('farea').querySelectorAll('.lrow:not([data-ut])').forEach(el => el.onclick = () => { const c = q1('SELECT name FROM characters WHERE id=?', [+el.dataset.id]); push({ page: 'char', title: c ? c.name : '', id: +el.dataset.id }); });
     if ($('ftag')) $('ftag').onclick = () => openTagPicker('feat', () => pageFeat(v));
     if ($('fsort')) $('fsort').onclick = () => openSortPicker(fctx, () => pageFeat(v));
     return;
@@ -4790,6 +4827,7 @@ function pageFeat(v) {
 /* ------------ 更新中心 ------------ */
 /* APP 版本更新说明(更新中心展示, 只保留最新版) */
 const APP_CHANGELOG = [   // 更新说明(=最新版) / 更新日志(更新中心按钮, v0.103起每版一项)
+  ['0.108', '综合更新：① 装置(機構)主数据接入 — 1128条/1027台/5种(防护盾防御848、变形机构260、逃生机能6、逃生机能(超强势)10、换装4)，图鉴详情新增「装置」区(名称/数值/完整说明) ② 第一击损伤无效标记(不限ULT：高达F91双V.S.B.R(EX)、超级海伯瑞安)，仅标记、伤害照常计算，特性页新增该分类 ③ 特性页MP新增「机体(主动MP)」区块 — 线性扫机体技能，V2突击暴风EX +3、卡斯巴尔专用高达 +6 ④ 防御eHP纳入机体被动防御%(含max满层，行内显示「防+X%」)，并修复条件被动1层判定bug(原恒为0层) ⑤ 主数据对账：地形1455台全一致、标签1454台中18台差异(wiki多出机体族标签) ⑥ 组队「选择防御/支援防御」改为二选一 — 原两者同开减伤叠加到100%(重复计算)，现互斥只取一次-40%；盾牌-20%对两者均生效'],
   ['0.107', '综合更新：① ULT改造系统 — ULT机体三段(SSR/UR/UR)共用同一套改造，0/50/100 三挡；Lv50 解锁该段 ULT 改造武器，Lv100 解锁每组三选一能力(攻击爆裂+20%伤害 / 威力抵御-20%受伤 / 支援攻防次数+1 / MP+6 等)，选择即时保存，图鉴新增 ULT改造能力卡。② 组队：攻击行绿色伤害下显示攻击力；防御 eHP 计入机体「最大HP提升」能力(超级海伯瑞 Lv100 HP 136,620)。计算/排行/组队新增「支援攻击/反击」开关：开=计入「支援攻击/支援反击/反击时」机体/驾驶员被动，关=按普通攻击不计入。③ 计算页修复 best 对象被行内注释吞字段导致的页面错误。④ 主数据与游戏 2.7.0 导出逐项核对，修正防御/回避标志、形态机地形、零件系列名；数据更新至 2026.10.17(新增机体13/机师9/武器70/支援3)；补齐45台机体原配机师；图鉴数值档位增加说明(max 含条件型被动/满层)；计算/排行/组队新增 max 满层开关(条件被动按1层，首动攻击次数型恒0层)；修正武器效果文本按武器特质名取属性(再生EX GN翼状獠牙=特殊、TRANS-AM EX=光束，不再按武器属性猜测)。'],
   ['0.105', '计算/排行/组队: 暴击率达到100%(含必暴)的武器/组合 无论暴击开关是否打开 均按暴击计算, 并标注「必暴」；对特定对手生效的机体/机师被动与武器特效在计算/排行/组队中注明条件(组队按所选防御机体标签匹配, 通用+条件被动开=全部生效)；特性新增「特攻」清单(可屏蔽ULT机体)；武器页补全「使用限制」(消耗HP/MP等)。'],
   ['0.104', '组队页「队伍增强」新增自定义增强，修复组队页全能力增强对基础值错误生效的bug，7移动标签改名支援防御范围7。'],

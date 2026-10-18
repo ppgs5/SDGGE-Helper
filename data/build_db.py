@@ -514,6 +514,18 @@ def import_master_ult(db):
                    ('unit', u, 'unit_skill', label, json.dumps(pr, ensure_ascii=False)))
         nf += 1
 
+    # 第一击损伤无效: 只要机体技能文本含此效果就标记(不限 ULT; 如 F91双V.S.B.R.(EX) 与 ULT「第一击损伤无效」)
+    # 仅作标记, 伤害照常计算(用户口径)
+    fh = set()
+    for u, sid, name, desc, dur, use, sort, src in sk2:
+        txt = (name or '') + ' ' + (desc or '')
+        if '第一击' in txt or '最初受到的损伤失效' in txt:
+            fh.add(u)
+    for u in fh:
+        if not db.execute("SELECT 1 FROM features WHERE feature='first_hit_immune' AND target_id=?", (u,)).fetchone():
+            db.execute("INSERT INTO features(target_type,target_id,feature,label,params_json) VALUES('unit',?,'first_hit_immune','第一击损伤无效','{\"desc\":\"自身最初受到的损伤失效(每场战斗1次)\"}')", (u,))
+    counts_fh = len(fh)
+
     # 同步 防御/回避标志 + 地形 + 原配机师补缺: 站侧列表页有 133 台缺 defend/evade(单机数据有), 116 台变形态地形需按游戏主数据校正;
     # default_char_id 仅补空值(现有 gacha 原配优先), 主数据 recommend_char_id 为官方推荐驾驶员
     mtr = {str(r['unit_id']).strip(): r for r in rows('unit_terrain.csv')}
@@ -538,9 +550,23 @@ def import_master_ult(db):
         if rec and not cur[7] and db.execute('SELECT 1 FROM characters WHERE id=?', (rec,)).fetchone():
             db.execute('UPDATE units SET default_char_id=? WHERE id=?', (rec, uid))
             nchar += 1
+    # 装置(機構)权威数据: 全部 1128 条分配 + 完整说明 (data/master/unit_mechanisms.csv)
+    mrows = []
+    for r in rows('unit_mechanisms.csv'):
+        try:
+            uid = int(r['unit_id']); mid = int(r['mechanism_id'])
+        except Exception:
+            continue
+        mrows.append((uid, mid, (r.get('mechanism_name') or '').strip(),
+                      (r.get('description') or '').strip(),
+                      int(float(r.get('type') or 0)), int(float(r.get('value') or 0))))
+    db.executescript('DROP TABLE IF EXISTS unit_mechanisms; CREATE TABLE unit_mechanisms(unit_id INTEGER, mechanism_id INTEGER, name TEXT, desc TEXT, type INTEGER, value INTEGER, PRIMARY KEY(unit_id, mechanism_id));')
+    db.executemany('INSERT OR REPLACE INTO unit_mechanisms VALUES(?,?,?,?,?,?)', mrows)
+
     return {'ult_group': len(out), 'unit_skills': len(sk2), 'unit_skill_feats': nf,
             'ult_custom': len(ucs), 'ult_skills': len(usk), 'ult_weapons': len(uw),
-            'unit_flags': nflags, 'unit_terrain': nter, 'unit_default_char': nchar}
+            'unit_flags': nflags, 'unit_terrain': nter, 'unit_default_char': nchar,
+            'unit_mechanisms': len(mrows), 'first_hit_immune': counts_fh}
 
 def main():
     db = sqlite3.connect(OUT)
