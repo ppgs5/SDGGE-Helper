@@ -1710,3 +1710,9 @@ def _scan_ability_features(feats, tt, tid, nm, trs):
 
 if __name__ == '__main__':
     main()
+    # 标签/系列按游戏主数据核对修复(幂等; 需 ggen_master 存在)
+    try:
+        import fix_tags_series
+        fix_tags_series.main()
+    except Exception as _e:
+        print('fix_tags_series warn:', _e)

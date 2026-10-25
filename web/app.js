@@ -1175,11 +1175,13 @@ function unitMetaAll() {
     const list = new Set();
     const prim = r.sname || _sd0[String(r.series_id)] || '';
     if (prim) list.add(prim);
-    try { for (const sid of JSON.parse(r.series_set_json || '[]')) { const nm = _sd0[String(sid)]; if (nm) list.add(nm); } } catch (e) {}
-    _unitMeta[r.id] = { id: r.id, tags: new Set(), series: prim, seriesList: list, role: r.role || 0 };
+    const sids = new Set();
+    if (r.series_id != null) sids.add(String(r.series_id));
+    try { for (const sid of JSON.parse(r.series_set_json || '[]')) { sids.add(String(sid)); const nm = _sd0[String(sid)]; if (nm) list.add(nm); } } catch (e) {}
+    _unitMeta[r.id] = { id: r.id, tags: new Set(), tagIds: new Set(), series: prim, seriesList: list, seriesIds: sids, role: r.role || 0 };
   }
-  for (const r of q('SELECT ut.unit_id, t.name FROM unit_tags ut JOIN tags t ON t.id=ut.tag_id')) {
-    if (_unitMeta[r.unit_id]) _unitMeta[r.unit_id].tags.add(r.name);
+  for (const r of q('SELECT ut.unit_id, t.id, t.name FROM unit_tags ut JOIN tags t ON t.id=ut.tag_id')) {
+    if (_unitMeta[r.unit_id]) { _unitMeta[r.unit_id].tags.add(r.name); _unitMeta[r.unit_id].tagIds.add(+r.id); }
   }
   return _unitMeta;
 }
@@ -1462,14 +1464,18 @@ function tagClause(cat, f, idCol, joinTbl, joinCol) {
 function unitWhere(cat, f) {
   const w = [], a = [];
   const tc = tagClause(cat, f, 'u.id', 'unit_tags', 'unit_id');
-  const serSql = (f.series && f.series.length) ? `u.series_id IN (${f.series.map(() => '?').join(',')})` : '';
+  /* 系列筛选: 主系列 OR 系列集(series_set_json)命中 —— 机体可属于多个系列(如 D高达3号机: DOUBLE FAKE + 逆袭的夏亚) */
+  const serSql = (f.series && f.series.length)
+    ? `(u.series_id IN (${f.series.map(() => '?').join(',')}) OR ${f.series.map(() => 'u.series_set_json LIKE ?').join(' OR ')})`
+    : '';
+  const serArgs = (f.series || []).length ? [...f.series, ...f.series.map(id => `%"${id}"%`)] : [];
   if (tc.sql && serSql && f.mode === 'or') {             // 并行模式: 标签任一 或 系列命中
     const ph = f.tags.map(() => '?').join(',');
     w.push(`(EXISTS(SELECT 1 FROM unit_tags t WHERE t.unit_id=u.id AND t.tag_id IN (${ph})) OR ${serSql})`);
-    a.push(...f.tags, ...f.series);
+    a.push(...f.tags, ...serArgs);
   } else {
     if (tc.sql) { w.push(tc.sql); a.push(...tc.args); }
-    if (serSql) { w.push(serSql); a.push(...f.series); }   // 串行: 标签与系列都要满足
+    if (serSql) { w.push(serSql); a.push(...serArgs); }   // 串行: 标签与系列都要满足
   }
   if (f.search) { const nl = nameLikeSql('u.name', f.search); w.push(nl.sql); a.push(...nl.args); }
   if (cat === 'unitrole') { w.push('u.role=?'); a.push(f.role); }
@@ -1529,7 +1535,17 @@ async function openTagPicker(cat, onChange) {
     if (cat === 'mod') return q(`SELECT m.series_id sid, s.name, COUNT(*) n FROM mods m JOIN series s ON s.id=m.series_id GROUP BY m.series_id ORDER BY n DESC`);
     if (cat === 'char' || cat === 'pickc' || cat === 'teamp') return q(`SELECT m.sid sid, s.name, COUNT(*) n FROM characters c JOIN (SELECT DISTINCT series_set_id ss, series_id sid FROM units) m ON m.ss=c.series_set_id JOIN series s ON s.id=m.sid GROUP BY m.sid ORDER BY n DESC`);
     if (cat === 'weapon') return q(`SELECT u.series_id sid, s.name, COUNT(DISTINCT w.id) n FROM weapons w JOIN units u ON u.id=w.unit_id JOIN series s ON s.id=u.series_id ${vc ? 'WHERE ' + vc : ''} GROUP BY u.series_id ORDER BY n DESC`);
-    return q(`SELECT u.series_id sid, s.name, COUNT(*) n FROM units u JOIN series s ON s.id=u.series_id ${vc ? 'WHERE ' + vc : ''} GROUP BY u.series_id ORDER BY n DESC`);
+    {   // 计数按「主系列 + 系列集」去重(与筛选口径一致): 一部机体可计入多个系列
+      const base = q(`SELECT u.id, u.series_id, u.series_set_json FROM units u ${vc ? 'WHERE ' + vc : ''}`);
+      const sd = seriesNameDict(), cnt = {};
+      for (const r of base) {
+        const ids = new Set();
+        if (r.series_id != null && r.series_id !== '') ids.add(String(r.series_id));
+        try { for (const x of JSON.parse(r.series_set_json || '[]')) ids.add(String(x)); } catch (e) {}
+        for (const id of ids) cnt[id] = (cnt[id] || 0) + 1;
+      }
+      return Object.entries(cnt).map(([sid, n]) => ({ sid, name: sd[sid] || '', n })).filter(x => x.name).sort((a, b) => b.n - a.n);
+    }
   };
   let series = hasSeries ? buildSeries() : [];
   /* 稀有度/类型筛选(机体&驾驶员语境): rank→rankCfg, team→team, 其余→filt 字段; 应用时写入(与页面行共享状态) */
@@ -1920,6 +1936,10 @@ function pageUnit(v, sp) {
   const ultOnNote = ultActive(u0);
   sp.title = u.name;
   const tags = q('SELECT t.id, t.name FROM unit_tags ut JOIN tags t ON t.id=ut.tag_id WHERE ut.unit_id=?', [u.id]);
+  const _sd = seriesNameDict(), _serIds = [];
+  if (u.series_id != null && u.series_id !== '') _serIds.push(String(u.series_id));
+  try { for (const x of JSON.parse(u.series_set_json || '[]')) { const k = String(x); if (!_serIds.includes(k)) _serIds.push(k); } } catch (e) {}
+  const serList = _serIds.map(id => ({ id, name: _sd[id] || '' })).filter(x => x.name);   // 系列: 主系列在前, 其余为系列集
   let abilities = [];   // sspOn 计算后取 unitAbilitiesOf (改装核心能力变化)
   let weapons = weaponsForUnit(u, ' ORDER BY type DESC, power DESC');
   const feats = q('SELECT feature,label,params_json FROM features WHERE target_type="unit" AND target_id=?', [u.id]);
@@ -1972,7 +1992,8 @@ function pageUnit(v, sp) {
     <div class="dhead">${imgTag(u.icon)}
       <div><div class="nm">${esc(u.name)} <span class="tagx cond">${r.n}</span></div>
       <div class="model">${rarTag(u.rarity)} ${esc(u.models || '')}${u.ult ? ' · ULT' + (ultStageOf(u) != null ? '（' + ULT_STAGE_FULL[ultStageOf(u)] + '）' : '') : ''}${ultOnNote ? ' · <span style="color:#9fe8c0">ULT改造 Lv' + state.ultLv + '</span>' : ''}</div>
-      <div class="chips">${tags.map(t => `<span class="chip" data-gotag="${t.id}" style="padding:2px 8px;font-size:10px">${esc(t.name)} ›</span>`).join('')}</div></div></div>
+      <div class="chips"><span class="hint" style="align-self:center;margin-right:2px">标签:</span>${tags.map(t => `<span class="chip" data-gotag="${t.id}" style="padding:2px 8px;font-size:10px">${esc(t.name)} ›</span>`).join('') || '<span class="hint">—</span>'}</div>
+      <div class="chips"><span class="hint" style="align-self:center;margin-right:2px">系列:</span>${serList.map(x => `<span class="chip${String(x.id) === String(u.series_id) ? ' on' : ''}" data-goser="${x.id}" style="padding:2px 8px;font-size:10px">《${esc(x.name)}》›</span>`).join('') || '<span class="hint">—</span>'}</div></div></div>
     ${statChips}${bstHint}
     <div class="statgrid">
       ${[['HP', 'hp'], ['EN', 'en'], ['攻击', 'atk'], ['防御', 'def'], ['机动', 'mob']].map(([k, f]) => {
@@ -2072,6 +2093,10 @@ function pageUnit(v, sp) {
   if ($('uultopen')) $('uultopen').onclick = () => openUltSheet();
   v.querySelectorAll('[data-gotag]').forEach(el => el.onclick = () => {   // 标签 → 图鉴按该标签筛选
     const f = filt('unit'); f.tags = [+el.dataset.gotag]; f.mode = 'or'; f.series = [];
+    state.unitKind = 'unit'; state.pageLimit = PAGE_SIZE; state.stack = []; setTab('units');
+  });
+  v.querySelectorAll('[data-goser]').forEach(el => el.onclick = () => {   // 系列 → 图鉴按该系列筛选
+    const f = filt('unit'); f.tags = []; f.mode = 'or'; f.series = [+el.dataset.goser];
     state.unitKind = 'unit'; state.pageLimit = PAGE_SIZE; state.stack = []; setTab('units');
   });
   if ($('us3')) $('us3').onclick = () => { uv.star3 = !uv.star3; if (!uv.star3) uv.ssp = false; pageUnit(v, sp); };
@@ -3357,7 +3382,19 @@ function shipTagsOfUnit(uid) {
   const st = shipTagSet();
   return q('SELECT t.name FROM unit_tags ut JOIN tags t ON t.id=ut.tag_id WHERE ut.unit_id=?', [uid]).map(r => r.name).filter(n => st.has(n));
 }
-const tbuffMatch = (b, meta) => !!(b.tags.length && (b.tags.some(t => meta.tags.has(t)) || (meta.seriesList ? b.tags.some(t => meta.seriesList.has(t)) : (meta.series && b.tags.includes(meta.series)))));   // 系列: 匹配 seriesList 全集(如 W系列 含 EW版等子系列), 修复只看主系列的漏配
+const tbuffMatch = (b, meta) => {
+  /* 自定义增强按 ID 精确匹配(标签名与系列名可能重名, 如 series 表内的「试作机」按名会误命中) */
+  if ((b.tagIds && b.tagIds.length) || (b.seriesIds && b.seriesIds.length)) {
+    const hits = [];
+    for (const id of (b.tagIds || [])) hits.push(!!(meta.tagIds && meta.tagIds.has(+id)));
+    for (const id of (b.seriesIds || [])) hits.push(!!(meta.seriesIds && meta.seriesIds.has(String(id))));
+    if (!hits.length) return false;
+    return b.mode === 'and' ? hits.every(Boolean) : hits.some(Boolean);
+  }
+  if (!(b.tags && b.tags.length)) return false;
+  const hit = t => meta.tags.has(t) || (meta.seriesList ? meta.seriesList.has(t) : (meta.series && b.tags.includes(meta.series)));
+  return b.mode === 'and' ? b.tags.every(hit) : b.tags.some(hit);   // 自定义增强按筛选器的「全部命中/任一命中」口径
+};;   // 系列: 匹配 seriesList 全集(如 W系列 含 EW版等子系列), 修复只看主系列的漏配
 /* 特性页标签/系列筛选 */
 let _featRR = null;
 function featRarRoleCache() {
@@ -3390,7 +3427,7 @@ function featFilterMatch(tt, tid) {
     const want = ff.tags.map(id => td[id]).filter(Boolean);
     tagHit = ff.mode === 'and' ? want.every(x => m.tags.has(x)) : want.some(x => m.tags.has(x));
   }
-  const serHit = hasS ? (!!m.series && serWant.includes(m.series)) : true;
+  const serHit = hasS ? ((m.seriesList && [...m.seriesList].some(n => serWant.includes(n))) || (!!m.series && serWant.includes(m.series))) : true;   // 系列集命中即算(机体可属多系列)
   if (hasT && hasS) return ff.mode === 'or' ? (tagHit || serHit) : (tagHit && serHit);
   return hasT ? tagHit : serHit;
 }
@@ -3461,7 +3498,7 @@ function pageTeam(v) {
   const shipTagTxt = ship ? [...ship.tags, ...ship.series].slice(0, 4).join('·') : '';
   const selBuffs = teamBuffGroups().filter(g => t.buffs.includes(g.key));
   const cbOn = !!(t.cbOn && t.cbuff && t.cbuff.tags && t.cbuff.tags.length && t.cbuff.pct > 0);   // 自定义增强: 勾选+多选标签/系列 + 全能力增强%
-  const selAll = cbOn ? selBuffs.concat([{ key: '__custom', tags: t.cbuff.tags, atk: t.cbuff.pct, def: t.cbuff.pct, hp: t.cbuff.pct }]) : selBuffs;
+  const selAll = cbOn ? selBuffs.concat([{ key: '__custom', tags: t.cbuff.tags, tagIds: t.cbuff.tagIds || [], seriesIds: t.cbuff.seriesIds || [], mode: t.cbuff.mode, atk: t.cbuff.pct, def: t.cbuff.pct, hp: t.cbuff.pct }]) : selBuffs;
   v.innerHTML = `
     <div class="card" style="padding:9px 12px; display:flex; gap:9px; align-items:center; cursor:pointer" id="picks">
       ${sup ? avTagR(sup.icon, null, sup.rarity) : '<span style="width:44px;height:44px;border-radius:9px;background:#0c1424;display:inline-block"></span>'}
@@ -3575,7 +3612,7 @@ function pageTeam(v) {
     const _fk = o => JSON.stringify([o.tags || [], (o.series || []).slice().sort(), o.mode || 'and', o.rar ?? null, o.role ?? null]);
     const _gkey = JSON.stringify([   // 性能: 组队全量排名(842k 对)结果缓存 —— 显式列出全部影响输入(归一化为有效值, 防默认字段漂移)
       _fk(f), _fk(filt('teamp')),
-      !!t.skills, !!t.first, !!t.fdth, !!t.cbOn, (t.cbuff && t.cbuff.tags) ? [t.cbuff.tags, t.cbuff.pct] : null, t.shipStar ?? 0, t.range ?? 'all', t.vigor || 'default', t.ca !== false, t.mp !== false,
+      !!t.skills, !!t.first, !!t.fdth, !!t.cbOn, (t.cbuff && t.cbuff.tags) ? [t.cbuff.tags, t.cbuff.tagIds || [], t.cbuff.seriesIds || [], t.cbuff.mode || 'and', t.cbuff.pct] : null, t.shipStar ?? 0, t.range ?? 'all', t.vigor || 'default', t.ca !== false, t.mp !== false,
       !!t.guard, !!t.sdef,   // 选择防御(姿态-40%/盾-20%)·支援防御(-40%+技能防御) — 影响 targetDef/defReduce, 必须入缓存键(曾漏→开关不生效)
       t.prole ?? null, t.terr || '', !!t.terrO, t.buffs || null, t.sdefMode || '2', t.tdef ?? 10000, t.tcdef ?? 750, t.defup ?? 0, t.tAtk ?? 0, t.tDef ?? 0, t.tHp ?? 0, t.atkup ?? 0, t.oDef ?? 0, t.oHp ?? 0,
       t.s3u !== false, t.spU !== false, t.sspU !== false, t.pSpU !== false, t.star ?? 3, t.rar ?? null, t.urole ?? null,
@@ -3973,7 +4010,7 @@ function showTeamBuffs() {
     return [...fT.tags.map(id => td[id]).filter(Boolean), ...(fT.series || []).map(id => smap[id]).filter(Boolean)];
   };
   const cbPrev = () => { const n = cbNames(); return n.length ? '已选 ' + n.length + ' 项: ' + esc(n.slice(0, 4).join('·')) + (n.length > 4 ? '…' : '') : '未选择（点左侧按钮选择标签/系列, 可多选）'; };
-  const commitCustom = () => { state.team.cbuff = { tagIds: [...fT.tags], seriesIds: [...(fT.series || [])], tags: cbNames(), pct: cbPct }; state.team.cbOn = tbCk; };
+  const commitCustom = () => { state.team.cbuff = { tagIds: [...fT.tags], seriesIds: [...(fT.series || [])], tags: cbNames(), mode: fT.mode || 'and', pct: cbPct }; state.team.cbOn = tbCk; };
   groups.forEach(g => { if (!g.isChar && g.shipTags === undefined) g.shipTags = shipTagsOfUnit(+g.target_id); });
   const tbShip = state.team.suppId ? shipEffOf(q1('SELECT * FROM supporters WHERE id=?', [state.team.suppId]), state.team.shipStar || 0) : null;
   const tbShipHl = g => {                      // 条目里的机体被当前战舰加成 → 绿框
@@ -4827,6 +4864,7 @@ function pageFeat(v) {
 /* ------------ 更新中心 ------------ */
 /* APP 版本更新说明(更新中心展示, 只保留最新版) */
 const APP_CHANGELOG = [   // 更新说明(=最新版) / 更新日志(更新中心按钮, v0.103起每版一项)
+  ['0.109', '综合更新：① 自定义增强按标签/系列 ID 精确匹配，并遵循「全部命中/任一命中」— 修复选「试作机+重击」时没有该标签的机体(如 D高达3号机)也吃到加成 ② 标签/系列按游戏主数据全面核对修复 — series 表 237→114(修正 1010=DOUBLE FAKE、1100=逆袭的夏亚 等被标签名污染的条目)，1454 台机体重算主系列/系列集，清理 123 个假系列，标签按主数据双向校准（补回「大魔」等真实标签、清除与主数据不符的 26 对） ③ 机体图鉴详情分开显示「标签」「系列」两行 — 系列含主系列(高亮)+系列集，点击可直接筛选 ④ 系列筛选改为「主系列 或 系列集」命中，图鉴/组队/排行/特性 四页统一 — D高达3号机按《机动战士高达 逆袭的夏亚》也能筛到 ⑤ 系列选择器计数同步按系列集去重 ⑥ 数据以游戏导出为准：清理手工重复录入的「极限高达 EXZELIA」(旧 id 1999000100)，统一为游戏主数据 id 1795000100，名称与面板同步'],
   ['0.108', '综合更新：① 装置(機構)主数据接入 — 1128条/1027台/5种(防护盾防御848、变形机构260、逃生机能6、逃生机能(超强势)10、换装4)，图鉴详情新增「装置」区(名称/数值/完整说明) ② 第一击损伤无效标记(不限ULT：高达F91双V.S.B.R(EX)、超级海伯瑞安)，仅标记、伤害照常计算，特性页新增该分类 ③ 特性页MP新增「机体(主动MP)」区块 — 线性扫机体技能，V2突击暴风EX +3、卡斯巴尔专用高达 +6 ④ 防御eHP纳入机体被动防御%(含max满层，行内显示「防+X%」)，并修复条件被动1层判定bug(原恒为0层) ⑤ 主数据对账：地形1455台全一致、标签1454台中18台差异(wiki多出机体族标签) ⑥ 组队「选择防御/支援防御」改为二选一 — 原两者同开减伤叠加到100%(重复计算)，现互斥只取一次-40%；盾牌-20%对两者均生效'],
   ['0.107', '综合更新：① ULT改造系统 — ULT机体三段(SSR/UR/UR)共用同一套改造，0/50/100 三挡；Lv50 解锁该段 ULT 改造武器，Lv100 解锁每组三选一能力(攻击爆裂+20%伤害 / 威力抵御-20%受伤 / 支援攻防次数+1 / MP+6 等)，选择即时保存，图鉴新增 ULT改造能力卡。② 组队：攻击行绿色伤害下显示攻击力；防御 eHP 计入机体「最大HP提升」能力(超级海伯瑞 Lv100 HP 136,620)。计算/排行/组队新增「支援攻击/反击」开关：开=计入「支援攻击/支援反击/反击时」机体/驾驶员被动，关=按普通攻击不计入。③ 计算页修复 best 对象被行内注释吞字段导致的页面错误。④ 主数据与游戏 2.7.0 导出逐项核对，修正防御/回避标志、形态机地形、零件系列名；数据更新至 2026.10.17(新增机体13/机师9/武器70/支援3)；补齐45台机体原配机师；图鉴数值档位增加说明(max 含条件型被动/满层)；计算/排行/组队新增 max 满层开关(条件被动按1层，首动攻击次数型恒0层)；修正武器效果文本按武器特质名取属性(再生EX GN翼状獠牙=特殊、TRANS-AM EX=光束，不再按武器属性猜测)。'],
   ['0.105', '计算/排行/组队: 暴击率达到100%(含必暴)的武器/组合 无论暴击开关是否打开 均按暴击计算, 并标注「必暴」；对特定对手生效的机体/机师被动与武器特效在计算/排行/组队中注明条件(组队按所选防御机体标签匹配, 通用+条件被动开=全部生效)；特性新增「特攻」清单(可屏蔽ULT机体)；武器页补全「使用限制」(消耗HP/MP等)。'],
