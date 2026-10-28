@@ -77,7 +77,7 @@ const Engine = (() => {
     const adj = targetDefAdjust(wtraits, lv);
     const def = (tUnitDef + adj.flat) * (1 + adj.pct / 100);
     const pb = (o.noPowerBoost ? 0 : powerBoostPct(wtraits, lv));
-    const power = Math.floor(weaponPower(w, lv) * (1 + pb / 100));
+    const power = Math.floor(weaponPower(w, lv) * (1 + (pb + (o.powerAdd || 0)) / 100));   // o.powerAdd: 武器效果「远距离时POWER提升」按最大档计入
     const vg = VIGOR[o.vigor || 'default'];
     const cdmg = o.crit ? critDmgPct(wtraits, lv) + (o.critDmgAdd || 0) : 0;   // 武器/机体/驾驶员39: 暴击时增伤区加算
     const ee = (o.ee || 0) + vg.rate + cdmg - (o.defReduce || 0);   // 增伤区（含气势/暴击伤害; 承伤减免与增伤同池相减）

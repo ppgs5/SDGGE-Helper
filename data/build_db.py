@@ -568,6 +568,32 @@ def import_master_ult(db):
             'unit_flags': nflags, 'unit_terrain': nter, 'unit_default_char': nchar,
             'unit_mechanisms': len(mrows), 'first_hit_immune': counts_fh}
 
+def import_char_series(db):
+    """驾驶员所属系列(可多系列): 主数据 MCharacter.series_set_id → MSeriesSet → series 列表
+       产物 char_series(char_id, series_id, sort)"""
+    import csv
+    M = os.path.join(HERE, '..', 'master')
+    if not os.path.isdir(M):
+        M = '/root/workspace/ggen_master/master'
+    if not os.path.isdir(M):
+        return {}
+    def rows(fn):
+        with open(os.path.join(M, fn), encoding='utf-8') as f:
+            return list(csv.DictReader(f))
+    chars = {str(r['id']).strip(): str(r.get('series_set_id') or '').strip() for r in rows('characters.csv')}
+    mset = {}
+    for r in rows('all/MSeriesSet.csv'):
+        sid = str(r['<SeriesSetId>k__BackingField']).strip()
+        mset.setdefault(sid, []).append((str(r['<SeriesId>k__BackingField']).strip(), int(float(r['<SortOrder>k__BackingField'] or 0))))
+    out = []
+    for cid, ss in chars.items():
+        for ser, so in sorted(mset.get(ss, []), key=lambda x: x[1]):
+            out.append((cid, ser, so))
+    db.executescript('DROP INDEX IF EXISTS idx_cs; DROP TABLE IF EXISTS char_series; CREATE TABLE char_series(char_id INTEGER, series_id TEXT, sort INTEGER, PRIMARY KEY(char_id, series_id)); CREATE INDEX idx_cs ON char_series(char_id);')
+    db.executemany('INSERT OR REPLACE INTO char_series VALUES(?,?,?)', out)
+    return {'char_series': len(out)}
+
+
 def main():
     db = sqlite3.connect(OUT)
     db.executescript(DDL)
@@ -753,7 +779,7 @@ def main():
             if ab:
                 det = ab.get('detail') or {}
                 nm = det.get('name') or ''
-                trs = ab.get('traits') or []
+                trs = ab.get('traits') or []   # 源数据按能力分组, 不跨能力去重(例: 利保逊 支援攻击/反击 LV5 与 EX角色能力 各有「支援攻击+1」, 合计 +3)
                 enrich_traits(trs)
                 db.execute('INSERT INTO char_abilities VALUES(?,?,?,?,?)',
                            (c['id'], a.get('sort'), a['ability_id'], nm, json.dumps(trs, ensure_ascii=False)))
@@ -1605,6 +1631,11 @@ def main():
         counts.update(import_master_ult(db) or {})
     except Exception as e:
         print('master ult import warn:', e)
+    try:
+        counts.update(import_char_series(db) or {})
+    except Exception as e:
+        print('char series import warn:', e)
+
 
     db.commit()
     db.execute('VACUUM')
@@ -1711,6 +1742,46 @@ def _scan_ability_features(feats, tt, tid, nm, trs):
 if __name__ == '__main__':
     main()
     # 标签/系列按游戏主数据核对修复(幂等; 需 ggen_master 存在)
+    try:
+        import fix_range_trait_desc   # 需在 main() 提交之后跑(独立连接看不到未提交数据)
+        fix_range_trait_desc.main()
+    except Exception as _e:
+        print('fix_range_trait_desc warn:', _e)
+    try:
+        import fix_weapon_map_cells
+        fix_weapon_map_cells.main()
+    except Exception as _e:
+        print('fix_weapon_map_cells warn:', _e)
+    try:
+        import fix_weapon_map_range
+        fix_weapon_map_range.main()
+    except Exception as _e:
+        print('fix_weapon_map_range warn:', _e)
+    try:
+        import fix_unit_size_mech
+        fix_unit_size_mech.main()
+    except Exception as _e:
+        print('fix_unit_size_mech warn:', _e)
+    try:
+        import fix_ability_dup_trait
+        fix_ability_dup_trait.main()
+    except Exception as _e:
+        print('fix_ability_dup_trait warn:', _e)
+    try:
+        import fix_unit_ability_desc
+        fix_unit_ability_desc.main()
+    except Exception as _e:
+        print('fix_unit_ability_desc warn:', _e)
+    try:
+        import fix_supporter_leader
+        fix_supporter_leader.main()
+    except Exception as _e:
+        print('fix_supporter_leader warn:', _e)
+    try:
+        import fix_manual_units
+        fix_manual_units.main()
+    except Exception as _e:
+        print('fix_manual_units warn:', _e)
     try:
         import fix_tags_series
         fix_tags_series.main()
