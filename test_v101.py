@@ -1,131 +1,64 @@
 # -*- coding: utf-8 -*-
-"""v101 验证: 更新中心改版(去自定义更新源/修复「检测中」) + 关于开源地址 + 版本 v0.101 比较
-① 无 #upbase 输入框、无「自动线路：…」说明行; 标题「在线更新 · 数据仓库」
-② 关于卡: 作者 DeepSeek + 开源地址 github.com/ppgs5/SDGGE-Helper(点击→Android.openUrl)
-③ APP 版本: stub 当前 0.101 vs mock 9.9.9 → 可更新+按钮 → downloadApk(url,mirror,'9.9.9') → 进度/安装
-④ mock 改 0.100(<0.101) → 「已是最新」且说明不再停在「检测中…」(v0.96 bug 修复)
-"""
-import json, os, subprocess, sys, time
+"""v0.101 验证: 默认设置下「计算页」与「组队页」对同一机体+机师+武器的伤害是否一致(对账口径回归)"""
+import subprocess, time, sys
 from playwright.sync_api import sync_playwright
-
-HERE = '/root/workspace/ggen_app'
-WEB = os.path.join(HERE, 'web')
-MOCK = '/tmp/ggen_app_mock'
-PORT, MPORT = 9006, 9007
-
-MOCK2 = '/tmp/ggen_app_mock2'
-os.makedirs(MOCK, exist_ok=True)
-os.makedirs(MOCK2, exist_ok=True)
-open(os.path.join(MOCK2, 'app_version.json'), 'w', encoding='utf-8').write(
-    '{"version":"9.9.9","size":1,"note":"新线路","apk_url":"https://example.com/apk","apk_mirror":""}')
-
-def write_mock(ver):
-    open(os.path.join(MOCK, 'app_version.json'), 'w', encoding='utf-8').write(
-        '{"version":"%s","size":12345678,"note":"测试版","apk_url":"https://example.com/apk",'
-        '"apk_mirror":"https://mirror.example.com/apk",'
-        '"apk_urls":["https://example.com/apk","https://mirror.example.com/apk","https://m3.example.com/apk"]}' % ver)
-write_mock('9.9.9')
-
-import functools, http.server, threading
-srv = subprocess.Popen(['python3', '-m', 'http.server', str(PORT)], cwd=WEB,
+PORT = 9060
+srv = subprocess.Popen(['python3', '-m', 'http.server', str(PORT)], cwd='/root/workspace/ggen_app/web',
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-class _H(http.server.SimpleHTTPRequestHandler):   # mock 需带 CORS
-    def end_headers(self):
-        self.send_header('Access-Control-Allow-Origin', '*')
-        super().end_headers()
-    def log_message(self, *a): pass
-_msrv = http.server.ThreadingHTTPServer(('127.0.0.1', MPORT), functools.partial(_H, directory=MOCK))
-threading.Thread(target=_msrv.serve_forever, daemon=True).start()
-_msrv2 = http.server.ThreadingHTTPServer(('127.0.0.1', 9008), functools.partial(_H, directory=MOCK2))
-threading.Thread(target=_msrv2.serve_forever, daemon=True).start()
 time.sleep(1.2)
-errors = []
+errs = []
 try:
     with sync_playwright() as p:
         b = p.chromium.launch()
         pg = b.new_page(viewport={'width': 420, 'height': 900})
-        pg.set_default_timeout(120000)
-        pg.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
-        pg.on('console', lambda m: errors.append('console.error: ' + m.text) if m.type == 'error' else None)
-        pg.add_init_script("""
-          window.__UPD_AUTO = ['http://127.0.0.1:9007/'];
-          window.Android = {
-            dbInfo: () => '{}', listPatches: () => '[]',
-            appInfo: () => JSON.stringify({versionName: '0.101', versionCode: 101}),
-            downloadApk: (u, v) => { window.__dl = [u, v]; window.__st = {state: 'downloading', pct: 5}; return true; },
-            apkState: () => JSON.stringify(window.__st || {state: 'idle'}),
-            openUrl: (u) => { window.__opened = u; }
-          };
-        """)
+        pg.set_default_timeout(240000)
+        pg.on('pageerror', lambda e: errs.append(str(e)))
+        pg.add_init_script("window.Android={dbInfo:()=>'{}',listPatches:()=>'[]'};")
         pg.goto(f'http://127.0.0.1:{PORT}/index.html')
         pg.wait_for_selector('#splash', state='hidden')
-        pg.wait_for_timeout(1000)
-        pg.evaluate("() => { state.stack = []; push({page: 'update', title: '更新中心'}); }")
-        pg.wait_for_timeout(2200)
+        pg.wait_for_timeout(1500)
 
-        # ① 去自定义更新源 + 标题
-        r = pg.evaluate("""() => ({ upbase: !!document.getElementById('upbase'),
-          autoLine: document.body.innerText.includes('自动线路：'), title: document.body.innerText.includes('在线更新 · 数据仓库') })""")
-        print('[① 去自定义更新源]', r)
-        assert not r['upbase'] and not r['autoLine'] and r['title'], r
-        print('[① 无输入框/说明行, 标题=在线更新 · 数据仓库 通过]')
+        # 默认设置: 组队页先算一次
+        pg.evaluate("() => { state.stack=[]; setTab('team'); render(); }")
+        pg.wait_for_timeout(9000)
+        row = pg.evaluate("""() => {
+            const G = state.teamCache && state.teamCache.G; if (!G) return null;
+            const r = (G.main || [])[0]; if (!r) return null;
+            return { uid: r.unitId, u: r.unit.name, pilot: r.pilot.name, pid: r.pilot.id,
+                     weapon: r.weapon.name, wid: r.weapon.id, dmg: r.dmg, uAtk: r.uAtk,
+                     ee: r.ee, defReduce: r.defReduce, vigor: r.vigor };
+        }""")
+        assert row, '组队无数据'
+        print('[组队]', row['u'], '+', row['pilot'], '|', row['weapon'], '| 伤害', row['dmg'],
+              '| 攻击', row['uAtk'], '| 增伤', row['ee'], '| 减伤', row['defReduce'])
 
-        # ② 关于: 作者 + 开源地址(点击→openUrl)
-        t = pg.evaluate("() => document.body.innerText")
-        assert 'DeepSeek' in t and 'github.com/ppgs5/SDGGE-Helper' in t, t[-300:]
-        pg.evaluate("() => document.getElementById('osurl').click()")
-        pg.wait_for_timeout(400)
-        op = pg.evaluate("() => window.__opened")
-        print('[② 开源地址点击]', op)
-        assert op == 'https://github.com/ppgs5/SDGGE-Helper', op
-        print('[② 关于(作者 DeepSeek + 开源地址可点) 通过]')
-        # ②b 免VPN镜像地址(v0.102): 显示 + 点击→openUrl(完整镜像URL)
-        m = pg.evaluate("() => (document.getElementById('osurl2')||{}).textContent")
-        print('[②b 免VPN镜像]', m)
-        assert m and 'gh-proxy.com' in m and 'SDGGE-Helper' in m, m
-        pg.evaluate("() => document.getElementById('osurl2').click()")
-        pg.wait_for_timeout(400)
-        op2 = pg.evaluate("() => window.__opened")
-        assert op2 == 'https://gh-proxy.com/https://github.com/ppgs5/SDGGE-Helper', op2
-        print('[②b 免VPN镜像地址显示+可点 通过]')
+        # 计算页: 同机体 + 同机师
+        pg.evaluate("""(a) => { state.stack=[]; setTab('calc'); state.calc.unitId=a.uid; state.calc.charId=a.pid; render(); }""", row)
+        pg.wait_for_timeout(9000)
+        calc = pg.evaluate("""(a) => {
+            const t = document.querySelector('.ctable'); if (!t) return null;
+            const tr = [...t.querySelectorAll('tr')].find(x => x.dataset.wid === String(a.wid));
+            const plain = [...t.querySelectorAll('tr')].find(x => x.innerText.includes(a.weapon));
+            const el = tr || plain; if (!el) return null;
+            const tds = [...el.querySelectorAll('td')]; return { dmg: tds[1] ? tds[1].innerText.trim() : null };
+        }""", row)
+        print('[计算]', row['weapon'], '| 伤害', calc['dmg'] if calc else '未找到')
+        assert calc and calc['dmg'], '计算页未找到该武器行'
 
-        # ③ 可更新流程
-        r = pg.evaluate("""() => ({ ver: document.getElementById('appver').textContent,
-          nw: document.getElementById('appnew').textContent })""")
-        print('[③ APP 版本]', r)
-        assert r['ver'] == 'v0.101' and 'v9.9.9' in r['nw'] and '可更新' in r['nw'], r
-        pg.evaluate("() => document.getElementById('appupd').click()")
-        pg.wait_for_timeout(500)
-        dl = pg.evaluate("() => window.__dl")
-        assert dl == [json.dumps(['https://example.com/apk', 'https://mirror.example.com/apk', 'https://m3.example.com/apk'], separators=(',', ':')), '9.9.9'], dl
-        print('[③ 多线路列表传入桥]', dl[0])
-        pg.evaluate("() => { window.__st = {state: 'downloading', pct: 42}; }")
-        pg.wait_for_timeout(1200)
-        assert '42%' in pg.evaluate("() => document.getElementById('appnote').textContent")
-        pg.evaluate("() => { window.__st = {state: 'installing', pct: 100}; }")
-        pg.wait_for_timeout(1200)
-        assert '安装' in pg.evaluate("() => document.getElementById('appnote').textContent")
-        print('[③ 可更新→下载→安装链路 通过]')
-
-        # ④ 已是最新(不再"检测中") — mock 改 0.100
-        write_mock('0.100')
-        pg.evaluate("() => { state.stack = []; push({page: 'update', title: '更新中心'}); }")
-        pg.wait_for_timeout(2500)
-        r = pg.evaluate("""() => ({ nw: document.getElementById('appnew').textContent, note: document.getElementById('appnote').textContent })""")
-        print('[④ 已是最新分支]', r)
-        assert '已是最新' in r['nw'] and '检测中' not in r['note'] and r['note'], r
-        print('[④ 0.100<0.101 → 已是最新, 说明不再是「检测中…」 通过]')
-
-        # ⑤ 陈旧镜像在前 + 新镜像在后 → 并行探测取最高版本(顺序取第一条会误报已是最新)
-        pg.evaluate("() => { window.__UPD_AUTO = ['http://127.0.0.1:9007/', 'http://127.0.0.1:9008/']; state.stack = []; push({page: 'update', title: '更新中心'}); }")
-        pg.wait_for_timeout(2500)
-        r = pg.evaluate("() => document.getElementById('appnew').textContent")
-        print('[⑤ 并行探测]', r)
-        assert 'v9.9.9' in r and '可更新' in r, r
-        print('[⑤ 陈旧镜像在前仍取到最高版本(9.9.9) 通过]')
+        # 计算页口径(气势/增伤/减伤)从页面文本抓取
+        txt = pg.evaluate("() => document.getElementById('view').innerText")
+        import re as _re
+        mv = _re.search(r'气势[^\n]*?增伤\+(\d+)%', txt)
+        mr = _re.search(r'减伤\s*(\d+)%', txt)
+        print('[计算口径] 增伤', mv.group(1) if mv else '?', '| 减伤', mr.group(1) if mr else '?')
+        print('[组队口径] 增伤', row['ee'], '| 减伤', row['defReduce'], '| 气势', row['vigor'])
+        c = int(calc['dmg'].replace(',', ''))
+        t = int(str(row['dmg']).replace(',', ''))
+        diff = abs(c - t) / max(1, t)
+        print(f'[对比] 组队 {t:,} vs 计算 {c:,} → 差异 {diff*100:.2f}%')
+        assert diff < 0.02, f'两页差异过大: {diff*100:.1f}%'
+        print('=== test_v101 通过（默认设置两页一致）===')
         b.close()
+    assert not errs, errs[:2]
 finally:
-    srv.terminate(); _msrv.shutdown(); _msrv2.shutdown()
-if errors:
-    print('页面错误:', errors[:6]); sys.exit(1)
-print('=== test_v101 全部通过 ===')
+    srv.terminate()

@@ -21,6 +21,10 @@ body{background:var(--bg); color:var(--text);
 .rstbtn{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); font-size:11px; padding:3px 12px;
   border-radius:999px; background:#16233c; border:1px solid #2c4066; color:#cfe0ff; cursor:pointer; white-space:nowrap; letter-spacing:.3px;}
 .rstbtn:active{background:#1b2c4c; border-color:#4cc9ff;}
+.rstbtn.right{left:auto; right:52px; transform:translate(0,-50%);}          /* 重置默认: 右侧, 不与更新按钮重叠 */
+.rstbtn.upd{left:34%; white-space:nowrap; max-width:46vw; overflow:hidden; text-overflow:ellipsis;}                                                      /* 更新排名/更新计算: 顶栏中心偏左 */
+.rstbtn.upd{font-weight:600;}
+.rstbtn.upd.dirty{background:#3a2a10; border-color:#ff9f43; color:#ffc46b;}  /* 有未生效改动时高亮 */
 
 .view{flex:1; overflow-y:auto; overflow-x:hidden; padding:2px 12px 12px;
   display:flex; flex-direction:column; gap:9px; -webkit-overflow-scrolling:touch;}

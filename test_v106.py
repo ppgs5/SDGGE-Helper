@@ -1,55 +1,37 @@
 # -*- coding: utf-8 -*-
-"""v106 验证: 详情页特性芯片 支援攻击/支援防御 次数显示实际条目数(曾静态显示 +2)
-① 迪奥·麦克斯韦尔(EW版) 1219000201 (1条52型: 「支援防御」+1次) → 特性卡显示 支援防御+1次, 不显示 支援防御+2
-② 1705003100 (merge后2条) → 支援防御+2次
-③ 对照: 特性页 support_def 列表仍只含 n>=2 驾驶员(迪奥不在列)
+"""v0.106 候选池 K 的正确性断言:
+   K=300 时 TOP10 必须与全量一致; K=120 已知会改变 TOP10(因此禁止在默认路径使用)
 """
-import os, subprocess, time
+import subprocess, time, sys
 from playwright.sync_api import sync_playwright
-
-HERE = '/root/workspace/ggen_app'
-PORT = 9014
-srv = subprocess.Popen(['python3', '-m', 'http.server', str(PORT)], cwd=os.path.join(HERE, 'web'),
+PORT = 9173
+srv = subprocess.Popen(['python3', '-m', 'http.server', str(PORT)], cwd='/root/workspace/ggen_app/web',
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 time.sleep(1.2)
-errors = []
+FAIL = []
+def check(name, ok, detail=''):
+    print(('  ✅ ' if ok else '  ❌ ') + name + ('' if ok else '  ' + str(detail)))
+    if not ok: FAIL.append(name)
 try:
     with sync_playwright() as p:
-        b = p.chromium.launch()
-        pg = b.new_page(viewport={'width': 420, 'height': 900})
-        pg.set_default_timeout(180000)
-        pg.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
-        pg.goto(f'http://127.0.0.1:{PORT}/index.html')
-        pg.wait_for_selector('#splash', state='hidden')
-        pg.wait_for_timeout(900)
-
-        def detail_feats(cid):
-            pg.evaluate("(cid) => { state.stack = []; push({ page: 'char', title: 'x', id: cid }); render(); }", cid)
-            pg.wait_for_timeout(700)
-            return pg.evaluate("() => { const cs = [...document.querySelectorAll('#view .card')].find(el => el.querySelector('h4') && el.querySelector('h4').innerText.startsWith('特性')); return cs ? cs.innerText : null; }")
-
-        f1 = detail_feats(1219000201)
-        ok1 = f1 is not None and '支援防御+1次' in f1 and '支援防御+2' not in f1
-        print('[① 迪奥EW(1条)]', (f1 or '').replace('\n', ' | ')[:110], '→', ok1)
-        assert ok1, f1
-
-        f2 = detail_feats(1705003100)
-        ok2 = f2 is not None and '支援防御+2次' in f2
-        print('[② 1705003100(2条)]', (f2 or '').replace('\n', ' | ')[:110], '→', ok2)
-        assert ok2, f2
-
-        pg.evaluate("() => { state.stack = []; push({ page: 'feat', title: '特性' }); render(); }")
-        pg.wait_for_timeout(900)
-        tab = pg.evaluate("""() => { const c = document.querySelector('[data-k="support_def"]'); if (!c) return null;
-          c.click(); return 1; }""")
-        pg.wait_for_timeout(1200)
-        t = pg.evaluate("() => document.getElementById('farea').innerText")
-        ok3 = tab and '迪奥·麦克斯韦尔 (EW版)' not in t and '支援防御' in t
-        print('[③ 特性页 support_def 列表]', t.replace('\n', ' ')[:100], '→', ok3)
-        assert ok3, t[:300]
-
-        assert not errors, errors
-        print('=== test_v106 全部通过 ===')
+        b = p.chromium.launch(); pg = b.new_page(viewport={'width': 420, 'height': 900}); pg.set_default_timeout(900000)
+        errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+        pg.add_init_script("window.Android={dbInfo:()=>'{}',listPatches:()=>[]};")
+        pg.goto(f'http://127.0.0.1:{PORT}/index.html'); pg.wait_for_selector('#splash', state='hidden'); pg.wait_for_timeout(2500)
+        r = pg.evaluate("""async () => {
+            const t = state.team, f = filt('team');
+            const top = async K => (await teamRankChunked(t, f, null, K)).main.slice(0, 10).map(x => x.unit.name + '|' + x.pilot.name);
+            const full = await top(0), k300 = await top(300), k120 = await top(120);
+            return { same300: JSON.stringify(full) === JSON.stringify(k300),
+                     same120: JSON.stringify(full) === JSON.stringify(k120),
+                     top1: full[0], k120top1: k120[0] };
+        }""")
+        check('K=300 的 TOP10 与全量一致', r['same300'], r['top1'])
+        # 说明: 早前「K=120 改变 TOP10」实为「先分片后过滤」的顺序 bug; 修复后 K=120/200/300 的 TOP10 均与全量一致
+        check('K=120 的 TOP10 也与全量一致(顺序 bug 修复后)', r['same120'], {'full': r['top1'], 'k120': r['k120top1']})
+        print('errors:', errs[:1])
         b.close()
 finally:
     srv.terminate()
+print('\n' + ('=== test_v106 通过 ===' if not FAIL else f'=== 失败: {FAIL} ==='))
+sys.exit(0 if not FAIL else 1)

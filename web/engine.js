@@ -33,14 +33,20 @@ const Engine = (() => {
   }
 
   /* 武器有效威力（按武器等级成长表 wsc） */
+  const _wpCache = new Map();   // 性能: 组队全量计算时 weaponPower 占 ~30% CPU, 结果只与武器/等级相关, 直接缓存
   function weaponPower(w, lv) {
+    const key = w.id + '|' + lv + '|' + (w.power || 0) + '|' + (w._sspAdd || 0) + '|' + (Array.isArray(w.wsc) ? 'a' : (w.wsc_json || '').length);
+    const hit = _wpCache.get(key);
+    if (hit !== undefined) return hit;
     let wsc = w.wsc;
     if (!Array.isArray(wsc)) {
       try { wsc = JSON.parse(w.wsc_json || '[]'); } catch (e) { wsc = []; }
     }
     const row = wsc.find(x => x.level === lv) || wsc[0];
     const pct = row ? row.power : 100;
-    return Math.floor((w.power || 0) * pct / 100) + (w._sspAdd || 0);   // _sspAdd: 改装核心(SSP满10)威力平加
+    const v = Math.floor((w.power || 0) * pct / 100) + (w._sspAdd || 0);   // _sspAdd: 改装核心(SSP满10)威力平加
+    if (_wpCache.size < 20000) _wpCache.set(key, v);
+    return v;
   }
 
   /* 条件类武装POWER提升（引擎口径: 44,45,81,82,91,92 → 威力×(1+Σ%)） */
