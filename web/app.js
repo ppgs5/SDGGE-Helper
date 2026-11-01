@@ -2428,6 +2428,7 @@ function pageUnit(v, sp) {
   const sspM = sspOn ? sspMovOf(u) : 0;   // SSP移动力加成(仅部分机体)
   if (sspOn) weapons = weapons.map(w => sspAdjW(w, u));   // 改装核心武器强化(威力/EN/弹药/射程)`
   abilities = unitAbilitiesOf(u.id, sspOn);   // 改装核心能力变化(替换/新增, 与SSP开关联动)
+  const uSkillRows = q('SELECT skill_id,name,desc,duration,usage_limit,sort FROM unit_skills WHERE unit_id=? ORDER BY sort', [u.id]);
   /* 数值提升档位: 单位能力(含SSP版, 随SSP开关) + 单位技能; 被动=无条件能力 · 主动=+技能 · max=+条件型(视为满足) */
   const _bstSk = featsView.filter(x => x.feature === 'unit_skill').map(x => { let pr = {}; try { pr = JSON.parse(x.params_json || '{}'); } catch (e) {} return { name: x.label, desc: pr.desc || '' }; });
   const bstPct = statBoostOf(abilities, state.uSk === false ? [] : _bstSk, uv.bst);   // 机体技能关: 档位不含单位技能
@@ -2551,6 +2552,7 @@ function pageUnit(v, sp) {
     </div>
     <div class="btnrow"><span class="bp" id="tocalc">加入伤害计算</span></div>
     <div class="card"><h4>对中防目标(20k)伤害 · 原配驾驶员 / 最高伤害驾驶员</h4><div class="kv" id="ubb" style="color:var(--dim);padding:0">计算中…</div></div>
+    ${uSkillRows.length ? `<div class="card"><h4>技能 · ${uSkillRows.length}</h4>${uSkillRows.map(sk => `<div class="kv"><b>${esc(String(sk.name || '').replace(/^单位技能【|】$/g, ''))}</b> <span style="color:#9fe8c0;font-size:9.5px;border:1px solid #9fe8c088;border-radius:6px;padding:0 5px">机体技能</span><br><span style="color:#8ea0c4;font-size:10.5px">${esc(String(sk.desc || '').replace(/\n/g, ' '))}</span><div class="hint" style="font-size:9px;margin:2px 0 0">持续 ${sk.duration || '-'} 回合 · 每场 ${sk.usage_limit || '-'} 次</div></div>`).join('')}</div>` : ''}
     <div class="card"><h4>能力 · ${abilities.length}</h4>
       ${abilities.map(a => `<div class="kv">✦ ${esc(a.name)}${a._ssp ? ' <span class="tagx new" style="font-size:8.5px;padding:1px 4px">SSP</span>' : ''}<br>${abilityCondChips(a.traits_json)}<span style="color:#8ea0c4;font-size:10.5px">${traitDescsOf(a.traits_json).map(descHtml).join('<br>') || '—'}</span></div>`).join('') || '<div class="kv" style="color:var(--dim)">无</div>'}
     </div>
